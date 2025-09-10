@@ -2,9 +2,9 @@ import time
 import os
 import requests
 import pandas as pd
-from tradingview_ta import TA_Handler, Interval
+from tradingview_ta import TA_Handler
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TOKEN = os.environ.get("TELEGRAM_TOKEN")  # set environment variable
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
 # Load IDX tickers
@@ -24,16 +24,16 @@ default_criteria = {
     "MACD": None,
     "RSI_min": None,
     "RSI_max": None,
-    "Stochastic_min": None,
-    "Stochastic_max": None,
+    "STOCHASTIC_min": None,
+    "STOCHASTIC_max": None,
     "EMA50_min": None,
     "EMA50_max": None,
-    "Volume_min": None,
-    "Volume_max": None,
+    "VOLUME_min": None,
+    "VOLUME_max": None,
     "Summary": None
 }
 
-default_interval = Interval.INTERVAL_1_DAY
+default_interval = "1d"
 
 # Telegram helper
 def send_message(chat_id, text):
@@ -61,35 +61,40 @@ def get_tv_ta_dynamic(symbol, chat_id):
 # Set criteria command
 def set_criteria(chat_id, text):
     criteria = default_criteria.copy()
-    parts = text.split()[1:]
+    parts = text.replace("/setcriteria","").strip().split()
     for p in parts:
         if "=" in p:
             key, value = p.split("=")
             key = key.upper()
             if key in criteria:
                 criteria[key] = value
-        elif "<" in p or ">" in p:
-            if "<" in p:
-                key, value = p.split("<")
-                key = key.upper() + "_max"
-            elif ">" in p:
-                key, value = p.split(">")
-                key = key.upper() + "_min"
-            if key in criteria:
+        elif ">" in p:
+            key, value = p.split(">")
+            key = key.upper() + "_min"
+            try:
                 criteria[key] = float(value)
+            except:
+                criteria[key] = value
+        elif "<" in p:
+            key, value = p.split("<")
+            key = key.upper() + "_max"
+            try:
+                criteria[key] = float(value)
+            except:
+                criteria[key] = value
     user_criteria[chat_id] = criteria
-    send_message(chat_id, f"Kriteria screener berhasil disimpan: {criteria}")
+    send_message(chat_id, f"Kriteria screener berhasil disimpan:\n{criteria}")
 
 # Set interval command
 def set_interval(chat_id, text):
     parts = text.split()
     if len(parts) == 2:
         interval_map = {
-            "1m": Interval.INTERVAL_1_MIN,
-            "5m": Interval.INTERVAL_5_MIN,
-            "15m": Interval.INTERVAL_15_MIN,
-            "1h": Interval.INTERVAL_1_HOUR,
-            "1d": Interval.INTERVAL_1_DAY
+            "1m": "1m",
+            "5m": "5m",
+            "15m": "15m",
+            "1h": "1h",
+            "1d": "1d"
         }
         interval_str = parts[1].lower()
         if interval_str in interval_map:
@@ -108,7 +113,7 @@ def run_screener(chat_id):
             continue
         match = True
 
-        # MACD Golden Cross
+        # MACD Golden/Death Cross
         macd = indicators.get("MACD.macd")
         signal = indicators.get("MACD.signal")
         if criteria.get("MACD") == "goldencross":
@@ -118,7 +123,7 @@ def run_screener(chat_id):
             if macd is None or signal is None or macd >= signal:
                 match = False
 
-        # RSI range
+        # RSI
         rsi = indicators.get("RSI")
         if rsi is not None:
             if criteria.get("RSI_min") is not None and rsi < criteria["RSI_min"]:
@@ -126,31 +131,31 @@ def run_screener(chat_id):
             if criteria.get("RSI_max") is not None and rsi > criteria["RSI_max"]:
                 match = False
 
-        # Stochastic range
+        # Stochastic
         stoch = indicators.get("Stoch.K")
         if stoch is not None:
-            if criteria.get("STOCHASTIC_MIN") is not None and stoch < criteria["STOCHASTIC_MIN"]:
+            if criteria.get("STOCHASTIC_min") is not None and stoch < criteria["STOCHASTIC_min"]:
                 match = False
-            if criteria.get("STOCHASTIC_MAX") is not None and stoch > criteria["STOCHASTIC_MAX"]:
+            if criteria.get("STOCHASTIC_max") is not None and stoch > criteria["STOCHASTIC_max"]:
                 match = False
 
-        # EMA50 range
+        # EMA50
         ema50 = indicators.get("EMA50")
         if ema50 is not None:
-            if criteria.get("EMA50_MIN") is not None and ema50 < criteria["EMA50_MIN"]:
+            if criteria.get("EMA50_min") is not None and ema50 < criteria["EMA50_min"]:
                 match = False
-            if criteria.get("EMA50_MAX") is not None and ema50 > criteria["EMA50_MAX"]:
+            if criteria.get("EMA50_max") is not None and ema50 > criteria["EMA50_max"]:
                 match = False
 
-        # Volume filter
+        # Volume
         vol = indicators.get("Volume")
         if vol is not None:
-            if criteria.get("VOLUME_MIN") is not None and vol < criteria["VOLUME_MIN"]:
+            if criteria.get("VOLUME_min") is not None and vol < criteria["VOLUME_min"]:
                 match = False
-            if criteria.get("VOLUME_MAX") is not None and vol > criteria["VOLUME_MAX"]:
+            if criteria.get("VOLUME_max") is not None and vol > criteria["VOLUME_max"]:
                 match = False
 
-        # Summary filter
+        # Summary
         if criteria.get("Summary") and summary.get("RECOMMENDATION") != criteria["Summary"]:
             match = False
 
