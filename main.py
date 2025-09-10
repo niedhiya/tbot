@@ -8,10 +8,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
-# Load IDX tickers dari Excel (harus berupa ticker TradingView, BBCA, BREN, TLKM, dsb)
+# Load IDX tickers
 def load_idx_tickers(file_path="tickers_idx.xlsx"):
     df = pd.read_excel(file_path)
-    tickers = df['Code'].astype(str).str.strip().tolist()
+    tickers = df['Code'].astype(str).tolist()
     return tickers
 
 tickers_list = load_idx_tickers()
@@ -39,21 +39,20 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# Fetch TA satu ticker (format IDX:SYMBOL)
+# Fetch TA untuk satu ticker
 def fetch_ta(symbol, interval):
-    tv_symbol = f"IDX:{symbol.strip()}"
     try:
         handler = TA_Handler(
-            symbol=tv_symbol,
+            symbol=symbol,
             screener="indonesia",
             exchange="IDX",
             interval=interval
         )
         analysis = handler.get_analysis()
-        return {"indicators": analysis.indicators, "summary": analysis.summary}
+        return symbol, {"indicators": analysis.indicators, "summary": analysis.summary}
     except Exception as e:
-        print(f"TA error {tv_symbol}: {e}")
-        return None
+        print(f"TA error {symbol}: {e}")
+        return symbol, None
 
 # Fetch TA semua ticker paralel
 def fetch_all_ta_parallel(interval):
@@ -61,13 +60,12 @@ def fetch_all_ta_parallel(interval):
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fetch_ta, symbol, interval): symbol for symbol in tickers_list}
         for future in as_completed(futures):
-            symbol = futures[future]
-            data = future.result()
-            if data is not None:
+            symbol, data = future.result()
+            if data:
                 all_ta[symbol] = data
     return all_ta
 
-# Set kriteria screener
+# Set criteria
 def set_criteria(chat_id, text):
     criteria = default_criteria.copy()
     parts = text.replace("/setcriteria","").strip().split()
@@ -94,7 +92,7 @@ def set_criteria(chat_id, text):
     user_criteria[chat_id] = criteria
     send_message(chat_id, f"Kriteria screener berhasil disimpan:\n{criteria}")
 
-# Set interval TA
+# Set interval
 def set_interval(chat_id, text):
     parts = text.split()
     if len(parts) == 2:
@@ -110,16 +108,15 @@ def set_interval(chat_id, text):
 def run_screener(chat_id):
     criteria = user_criteria.get(chat_id, default_criteria)
     interval = user_interval.get(chat_id, default_interval)
+    # Ambil semua TA paralel
     all_ta = fetch_all_ta_parallel(interval)
     screened = []
 
     for symbol, data in all_ta.items():
-        indicators = data.get("indicators")
-        summary = data.get("summary")
-        if not indicators or not summary:
-            continue
-
+        indicators = data["indicators"]
+        summary = data["summary"]
         match = True
+
         macd = indicators.get("MACD.macd")
         signal = indicators.get("MACD.signal")
         if criteria.get("MACD") == "goldencross" and (macd is None or signal is None or macd <= signal):
@@ -168,7 +165,7 @@ def help_message():
         "📌 *Bot Data Saham IDX*\n\n"
         "/start - Mulai bot\n"
         "/help - Panduan\n"
-        "/ta <TICKER> - Tampilkan TA TradingView (contoh: /ta BREN)\n"
+        "/ta <TICKER> - Tampilkan TA TradingView\n"
         "/setcriteria macd=goldencross rsi>60 rsi<90 ema50>5000 volume>1000000 summary=BUY - Set kriteria\n"
         "/setinterval 1m|5m|15m|1h|1d - Set interval TA\n"
         "/screener - Menampilkan semua saham yang memenuhi kriteria"
@@ -195,10 +192,8 @@ def main():
                         parts = text.split()
                         if len(parts)==2:
                             symbol = parts[1].upper()
-                            data = fetch_ta(symbol, user_interval.get(chat_id, default_interval))
-                            if data is not None:
-                                indicators = data["indicators"]
-                                summary = data["summary"]
+                            indicators, summary = fetch_ta(symbol, user_interval.get(chat_id, default_interval))
+                            if indicators:
                                 msg = f"{symbol} Technical Analysis:\n"
                                 for k,v in indicators.items():
                                     msg += f"{k}: {v}\n"
