@@ -1,68 +1,124 @@
-import pandas as pd
-from tradingview_ta import TA_Handler, Interval
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
-from concurrent.futures import ThreadPoolExecutor
+import os
+import requests
 import time
+import pickle
+from tradingview_ta import TA_Handler
+from concurrent.futures import ThreadPoolExecutor
 
-# === Load ticker IDX dari Excel ===
-df = pd.read_excel("tickers_idx.xlsx")  # pastikan ada kolom 'KodeEmiten'
-tickers_list = [f"{row}.JK" for row in df['Code']]
+TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
+URL = f"https://api.telegram.org/bot{TOKEN}"
+
+# Cache TA
+TA_CACHE_FILE = "ta_cache.pkl"
+TA_CACHE_TTL = 300  # 5 menit
+try:
+    with open(TA_CACHE_FILE, "rb") as f:
+        ta_cache = pickle.load(f)
+except:
+    ta_cache = {}
+
+# Ambil semua ticker IDX dari TradingView JSON
+def get_tickers_json():
+    url = "https://scanner.tradingview.com/indonesia/scan"
+    payload = {
+        "filter": [],
+        "symbols": {"query": {"types": []}, "tickers": []},
+        "columns": ["symbol"]
+    }
+    try:
+        response = requests.post(url, json=payload)
+        data = response.json()
+        tickers = [item['s'] for item in data.get('data', [])]
+        return tickers
+    except Exception as e:
+        print("Error getting tickers:", e)
+        return []
+
+tickers_list = get_tickers_json()
 print(f"Total tickers: {len(tickers_list)}")
 
-# === Global ===
-user_criteria = {}
-cache_ta = {}  # cache TA untuk setiap ticker
-CACHE_EXPIRY = 60  # detik
-current_interval = Interval.INTERVAL_1_DAY  # default interval
+# User settings
+user_criteria = {}  # kriteria user per chat_id
+user_interval = {}  # interval per chat_id
+default_interval = "1d"
 
-# === Fungsi fetch TA dengan cache ===
-def fetch_ta(symbol, interval=current_interval):
+# Kirim pesan ke Telegram
+def send_message(chat_id, text):
+    requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
+
+# Fetch TA dengan cache
+def fetch_ta(symbol, interval):
     now = time.time()
-    if symbol in cache_ta:
-        ta_data, ts = cache_ta[symbol]
-        if now - ts < CACHE_EXPIRY:
-            return ta_data
+    key = f"{symbol}_{interval}"
+    if key in ta_cache:
+        cached_time, data = ta_cache[key]
+        if now - cached_time < TA_CACHE_TTL:
+            return data
     try:
         handler = TA_Handler(symbol=symbol, screener="indonesia", exchange="IDX", interval=interval)
         analysis = handler.get_analysis()
-        ta_data = {
-            "symbol": symbol,
-            "indicators": analysis.indicators,
-            "summary": analysis.summary
-        }
-        cache_ta[symbol] = (ta_data, now)
-        return ta_data
+        data = {"indicators": analysis.indicators, "summary": analysis.summary}
+        ta_cache[key] = (now, data)
+        with open(TA_CACHE_FILE, "wb") as f:
+            pickle.dump(ta_cache, f)
+        return data
     except Exception as e:
-        print(f"Skipped {symbol}: {e}")
+        print(f"Error fetching TA {symbol}: {e}")
         return None
 
-# === Screener ===
-def run_screener():
+# Screener
+def run_screener(chat_id):
+    criteria = user_criteria.get(chat_id, {})
+    interval = user_interval.get(chat_id, default_interval)
     results = []
 
     def check_ticker(symbol):
-        data = fetch_ta(symbol)
+        data = fetch_ta(symbol, interval)
         if not data:
             return None
-        indicators = data['indicators']
-        if not user_criteria:
-            # tampil seluruh indikator
-            indicator_str = ", ".join([f"{k}:{v}" for k, v in indicators.items()])
-            return f"{symbol} - {indicator_str} - Recommendation: {data['summary'].get('RECOMMENDATION','N/A')}"
-        passed = True
-        for key, val in user_criteria.items():
-            indicator_val = indicators.get(key)
-            if indicator_val is None:
-                passed = False
+        indicators = data["indicators"]
+        summary = data["summary"]
+        match = True
+
+        # Cek kriteria user
+        for k, v in criteria.items():
+            k = k.upper()
+            try:
+                # MACD
+                if k == "MACD" and v.lower() in ["goldencross","deathcross"]:
+                    macd = indicators.get("MACD.macd")
+                    signal = indicators.get("MACD.signal")
+                    if macd is None or signal is None:
+                        match = False
+                        break
+                    if v.lower() == "goldencross" and macd <= signal:
+                        match = False
+                        break
+                    elif v.lower() == "deathcross" and macd >= signal:
+                        match = False
+                        break
+                # RSI
+                elif k.endswith("_MIN"):
+                    ind = k.replace("_MIN","")
+                    if indicators.get(ind) is None or indicators[ind] < float(v):
+                        match = False
+                        break
+                elif k.endswith("_MAX"):
+                    ind = k.replace("_MAX","")
+                    if indicators.get(ind) is None or indicators[ind] > float(v):
+                        match = False
+                        break
+                # Summary
+                elif k == "SUMMARY":
+                    if summary.get("RECOMMENDATION") != v:
+                        match = False
+                        break
+            except:
+                match = False
                 break
-            min_val, max_val = val
-            if not (min_val <= indicator_val <= max_val):
-                passed = False
-                break
-        if passed:
-            indicator_str = ", ".join([f"{k}:{v}" for k, v in indicators.items()])
-            return f"{symbol} - {indicator_str} - Recommendation: {data['summary'].get('RECOMMENDATION','N/A')}"
+
+        if match:
+            return symbol
         return None
 
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -71,81 +127,90 @@ def run_screener():
             res = f.result()
             if res:
                 results.append(res)
+
     return results
 
-# === Telegram Bot Handlers ===
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Halo! Bot screener saham IDX lanjutan siap.\nGunakan /help untuk panduan.")
+# /setcriteria
+def set_criteria(chat_id, text):
+    criteria = {}
+    parts = text.replace("/setcriteria","").strip().split()
+    for p in parts:
+        if "=" in p:
+            key,val = p.split("=")
+            criteria[key.upper()] = val
+        elif ">" in p:
+            key,val = p.split(">")
+            criteria[key.upper()+"_MIN"] = val
+        elif "<" in p:
+            key,val = p.split("<")
+            criteria[key.upper()+"_MAX"] = val
+    user_criteria[chat_id] = criteria
+    send_message(chat_id, f"Kriteria tersimpan:\n{criteria}")
 
-def help_command(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "/setcriteria key min max - set kriteria indikator (RSI, MACD, EMA, Stoch, StochRSI, Volume)\n"
-        "/interval 1m|5m|1d - set interval TA\n"
-        "/screener - jalankan screener sesuai kriteria\n"
-        "/clearcriteria - hapus semua kriteria\n"
-        "Tanpa kriteria, screener menampilkan semua indikator TA"
-    )
-
-def set_criteria(update: Update, context: CallbackContext):
-    if len(context.args) != 3:
-        update.message.reply_text("Format salah. Contoh: /setcriteria RSI 60 90")
-        return
-    key = context.args[0]
-    try:
-        min_val = float(context.args[1])
-        max_val = float(context.args[2])
-        user_criteria[key] = (min_val, max_val)
-        update.message.reply_text(f"Kriteria disimpan: {key} between {min_val} dan {max_val}")
-    except:
-        update.message.reply_text("Nilai harus angka. Contoh: /setcriteria RSI 60 90")
-
-def clear_criteria(update: Update, context: CallbackContext):
-    user_criteria.clear()
-    update.message.reply_text("Semua kriteria dihapus.")
-
-def set_interval(update: Update, context: CallbackContext):
-    global current_interval
-    if not context.args:
-        update.message.reply_text("Contoh penggunaan: /interval 1m")
-        return
-    arg = context.args[0]
-    mapping = {
-        "1m": Interval.INTERVAL_1_MIN,
-        "5m": Interval.INTERVAL_5_MIN,
-        "15m": Interval.INTERVAL_15_MIN,
-        "1h": Interval.INTERVAL_1_HOUR,
-        "1d": Interval.INTERVAL_1_DAY
-    }
-    if arg in mapping:
-        current_interval = mapping[arg]
-        update.message.reply_text(f"Interval TA diubah menjadi {arg}")
+# /setinterval
+def set_interval(chat_id, text):
+    parts = text.split()
+    if len(parts)==2 and parts[1] in ["1m","5m","15m","1h","1d"]:
+        user_interval[chat_id] = parts[1]
+        send_message(chat_id, f"Interval diset ke {parts[1]}")
     else:
-        update.message.reply_text("Interval tidak valid. Pilih 1m,5m,15m,1h,1d")
+        send_message(chat_id,"Gunakan interval: 1m,5m,15m,1h,1d")
 
-def screener(update: Update, context: CallbackContext):
-    update.message.reply_text("Menjalankan screener, tunggu sebentar...")
-    results = run_screener()
-    if results:
-        # batasi 20 ticker agar output tetap terbaca
-        update.message.reply_text("\n\n".join(results[:20]))
-    else:
-        update.message.reply_text("Tidak ada saham yang lolos kriteria.")
+# /ta <ticker>
+def get_ta(chat_id, ticker):
+    interval = user_interval.get(chat_id, default_interval)
+    data = fetch_ta(ticker, interval)
+    if not data:
+        send_message(chat_id, f"TA {ticker} tidak tersedia")
+        return
+    msg = f"{ticker} TA:\n"
+    for k,v in data["indicators"].items():
+        msg += f"{k}: {v}\n"
+    msg += f"Summary: {data['summary'].get('RECOMMENDATION','N/A')}"
+    send_message(chat_id, msg)
 
-# === Main ===
+# /help
+def help_message():
+    return ("/start - Mulai bot\n"
+            "/help - Panduan\n"
+            "/ta <ticker> - Analisis teknikal\n"
+            "/setcriteria - Set filter screener\n"
+            "/setinterval - Set interval TA\n"
+            "/screener - Jalankan screener saham")
+
+# Main loop
 def main():
-    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
+    offset = None
+    while True:
+        try:
+            updates = requests.get(f"{URL}/getUpdates", params={"offset":offset,"timeout":100}).json()
+            for update in updates.get("result",[]):
+                msg = update.get("message")
+                if not msg: continue
+                chat_id = msg["chat"]["id"]
+                text = msg.get("text","").lower()
+                if "/start" in text:
+                    send_message(chat_id,"Bot aktif. Gunakan /help untuk panduan.")
+                elif "/help" in text:
+                    send_message(chat_id, help_message())
+                elif text.startswith("/ta"):
+                    parts = text.split()
+                    if len(parts)==2:
+                        get_ta(chat_id, parts[1].upper())
+                elif text.startswith("/setcriteria"):
+                    set_criteria(chat_id, text)
+                elif text.startswith("/setinterval"):
+                    set_interval(chat_id, text)
+                elif "/screener" in text:
+                    res = run_screener(chat_id)
+                    if res:
+                        send_message(chat_id,"Screener saham:\n" + "\n".join(res))
+                    else:
+                        send_message(chat_id,"Tidak ada saham lolos kriteria saat ini.")
+                offset = update["update_id"]+1
+        except Exception as e:
+            print("Error:", e)
+        time.sleep(5)
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
-    dp.add_handler(CommandHandler("setcriteria", set_criteria))
-    dp.add_handler(CommandHandler("clearcriteria", clear_criteria))
-    dp.add_handler(CommandHandler("interval", set_interval))
-    dp.add_handler(CommandHandler("screener", screener))
-
-    updater.start_polling()
-    updater.idle()
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
