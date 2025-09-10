@@ -37,21 +37,9 @@ tickers_list = get_tickers()
 print(f"Total tickers: {len(tickers_list)}")
 
 # User settings
-user_criteria = {}
-user_interval = {}
-default_interval = "1d"
-default_criteria = {
-    "MACD": "",
-    "RSI_min": "",
-    "RSI_max": "",
-    "STOCHASTIC_min": "",
-    "STOCHASTIC_max": "",
-    "EMA50_min": "",
-    "EMA50_max": "",
-    "VOLUME_min": "",
-    "VOLUME_max": "",
-    "Summary": ""
-}
+user_criteria = {}  # kriteria user, kosong awalnya
+user_interval = {}  # interval per user
+default_interval = "1d"  # interval default
 
 # Kirim pesan ke Telegram
 def send_message(chat_id, text):
@@ -78,7 +66,7 @@ def fetch_ta(symbol, interval):
 
 # Screener
 def run_screener(chat_id):
-    criteria = user_criteria.get(chat_id, default_criteria)
+    criteria = user_criteria.get(chat_id, {})  # Hanya gunakan kriteria user
     interval = user_interval.get(chat_id, default_interval)
     results = []
 
@@ -93,7 +81,7 @@ def run_screener(chat_id):
         # MACD
         macd = indicators.get("MACD.macd")
         signal = indicators.get("MACD.signal")
-        if criteria.get("MACD"):
+        if "MACD" in criteria and criteria["MACD"]:
             if criteria["MACD"].lower() == "goldencross" and (macd is None or signal is None or macd <= signal):
                 match = False
             elif criteria["MACD"].lower() == "deathcross" and (macd is None or signal is None or macd >= signal):
@@ -102,38 +90,47 @@ def run_screener(chat_id):
         # RSI
         rsi = indicators.get("RSI")
         if rsi is not None:
-            if criteria.get("RSI_min") != "" and rsi < float(criteria["RSI_min"]):
-                match = False
-            if criteria.get("RSI_max") != "" and rsi > float(criteria["RSI_max"]):
-                match = False
+            if "RSI_min" in criteria:
+                if rsi < float(criteria["RSI_min"]):
+                    match = False
+            if "RSI_max" in criteria:
+                if rsi > float(criteria["RSI_max"]):
+                    match = False
 
         # Stochastic
         stoch = indicators.get("Stoch.K")
         if stoch is not None:
-            if criteria.get("STOCHASTIC_min") != "" and stoch < float(criteria["STOCHASTIC_min"]):
-                match = False
-            if criteria.get("STOCHASTIC_max") != "" and stoch > float(criteria["STOCHASTIC_max"]):
-                match = False
+            if "STOCHASTIC_min" in criteria:
+                if stoch < float(criteria["STOCHASTIC_min"]):
+                    match = False
+            if "STOCHASTIC_max" in criteria:
+                if stoch > float(criteria["STOCHASTIC_max"]):
+                    match = False
 
         # EMA50
         ema50 = indicators.get("EMA50")
         if ema50 is not None:
-            if criteria.get("EMA50_min") != "" and ema50 < float(criteria["EMA50_min"]):
-                match = False
-            if criteria.get("EMA50_max") != "" and ema50 > float(criteria["EMA50_max"]):
-                match = False
+            if "EMA50_min" in criteria:
+                if ema50 < float(criteria["EMA50_min"]):
+                    match = False
+            if "EMA50_max" in criteria:
+                if ema50 > float(criteria["EMA50_max"]):
+                    match = False
 
         # Volume
         vol = indicators.get("Volume")
         if vol is not None:
-            if criteria.get("VOLUME_min") != "" and vol < float(criteria["VOLUME_min"]):
-                match = False
-            if criteria.get("VOLUME_max") != "" and vol > float(criteria["VOLUME_max"]):
-                match = False
+            if "VOLUME_min" in criteria:
+                if vol < float(criteria["VOLUME_min"]):
+                    match = False
+            if "VOLUME_max" in criteria:
+                if vol > float(criteria["VOLUME_max"]):
+                    match = False
 
         # Summary
-        if criteria.get("Summary") != "" and summary.get("RECOMMENDATION") != criteria["Summary"]:
-            match = False
+        if "Summary" in criteria and criteria["Summary"]:
+            if summary.get("RECOMMENDATION") != criteria["Summary"]:
+                match = False
 
         if match:
             return symbol
@@ -149,14 +146,13 @@ def run_screener(chat_id):
 
 # /setcriteria
 def set_criteria(chat_id, text):
-    criteria = default_criteria.copy()
+    criteria = {}
     parts = text.replace("/setcriteria","").strip().split()
     for p in parts:
         if "=" in p:
             key,val = p.split("=")
             key = key.upper()
-            if key in criteria:
-                criteria[key] = val
+            criteria[key] = val
         elif ">" in p:
             key,val = p.split(">")
             key = key.upper()+"_min"
