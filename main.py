@@ -24,8 +24,8 @@ def send_message(chat_id, text):
         print(f"Error sending message: {e}")
 
 # TradingView TA
-INTERVAL = Interval.INTERVAL_1_MINUTE  # default intraday
-CACHE_EXPIRY = 60  # detik
+INTERVAL = Interval.INTERVAL_1_DAY  # default intraday
+CACHE_EXPIRY = 600  # detik
 
 ta_cache = {}  # {ticker: {'time': timestamp, 'data': indicators, 'summary': summary}}
 
@@ -45,6 +45,8 @@ def get_cached_ta(symbol):
     indicators, summary = get_tv_ta(symbol)
     if indicators:
         ta_cache[symbol] = {'time': now, 'data': indicators, 'summary': summary}
+    else:
+        print(f"Ticker {symbol} gagal diambil dari TradingView")
     return indicators, summary
 
 # Preload TA semua ticker sesuai interval
@@ -63,9 +65,11 @@ screener_filters = {
 def run_screener():
     preload_all_ta()  # pastikan semua TA di-cache
     results = []
+    failed = []
     for t in tickers_list:
         indicators, summary = get_cached_ta(t)
         if not indicators:
+            failed.append(t)
             continue
         passed = True
         for key, condition in screener_filters.items():
@@ -79,6 +83,8 @@ def run_screener():
                     passed = False
         if passed:
             results.append(t)
+    if failed:
+        print(f"Ticker gagal diambil: {failed}")
     return results
 
 # Background auto-check for screener
