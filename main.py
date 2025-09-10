@@ -24,79 +24,49 @@ def send_message(chat_id, text):
         print(f"Error sending message: {e}")
 
 # TradingView TA
-INTERVAL = Interval.INTERVAL_1_DAY  # default intraday
-CACHE_EXPIRY = 600  # detik
+INTERVAL = Interval.INTERVAL_1_DAY  # default daily interval
+CACHE_EXPIRY = 60  # detik
 
-ta_cache = {}  # {ticker: {'time': timestamp, 'data': indicators, 'summary': summary}}
+ta_cache = {}  # {ticker: {'indicators': ..., 'summary': ...}}
 
+# Ambil TA per ticker
 def get_tv_ta(symbol):
     try:
         handler = TA_Handler(symbol=symbol, screener="indonesia", exchange="IDX", interval=INTERVAL)
         analysis = handler.get_analysis()
         return analysis.indicators, analysis.summary
     except Exception as e:
-        print(f"TradingView TA error for {symbol}: {e}")
+        print(f"[ERROR] Ticker {symbol} gagal diambil: {e}")
         return None, None
 
-def get_cached_ta(symbol):
-    now = time.time()
-    if symbol in ta_cache and now - ta_cache[symbol]['time'] < CACHE_EXPIRY:
-        return ta_cache[symbol]['data'], ta_cache[symbol]['summary']
-    indicators, summary = get_tv_ta(symbol)
-    if indicators:
-        ta_cache[symbol] = {'time': now, 'data': indicators, 'summary': summary}
-    else:
-        print(f"Ticker {symbol} gagal diambil dari TradingView")
-    return indicators, summary
-
-# Preload TA semua ticker sesuai interval
-def preload_all_ta():
+# Perulangan /ta_all simpan data
+def ta_all_loop(save_to_file=True):
     for t in tickers_list:
-        get_cached_ta(t)
+        indicators, summary = get_tv_ta(t)
+        if indicators:
+            ta_cache[t] = {'indicators': indicators, 'summary': summary}
+            print(f"TA {t} berhasil diambil.")
+        else:
+            print(f"TA {t} gagal diambil.")
+        time.sleep(1)  # delay supaya tidak overload request
 
-# Screener dynamic
-screener_filters = {
-    'MACD': 'Golden Cross',  # contoh default filter
-    'RSI': '<70',
-    'Stochastic_K': '<80',
-    'Summary': None  # abaikan summary default
-}
+    if save_to_file:
+        df_list = []
+        for ticker, data in ta_cache.items():
+            row = {'Ticker': ticker}
+            row.update(data['indicators'])
+            row.update({'Summary': data['summary'].get('RECOMMENDATION')})
+            df_list.append(row)
+        df = pd.DataFrame(df_list)
+        df.to_excel("ta_idx_1day.xlsx", index=False)
+        print("Semua data TA tersimpan di ta_idx_1day.xlsx")
 
-def run_screener():
-    preload_all_ta()  # pastikan semua TA di-cache
-    results = []
-    failed = []
-    for t in tickers_list:
-        indicators, summary = get_cached_ta(t)
-        if not indicators:
-            failed.append(t)
-            continue
-        passed = True
-        for key, condition in screener_filters.items():
-            if key in summary and condition is not None:
-                if summary[key] != condition:
-                    passed = False
-            if key in indicators and '<' in condition:
-                threshold = float(condition.replace('<',''))
-                val = indicators[key]
-                if val >= threshold:
-                    passed = False
-        if passed:
-            results.append(t)
-    if failed:
-        print(f"Ticker gagal diambil: {failed}")
-    return results
-
-# Background auto-check for screener
+# Telegram bot untuk /ta_all
 subscribers = set()
 
 def auto_check():
     while True:
-        screened = run_screener()
-        if screened:
-            msg = "🔍 Screener IDX (Filter Dinamis):\n" + "\n".join(screened)
-            for chat_id in subscribers:
-                send_message(chat_id, msg)
+        # bisa dipakai untuk screener otomatis tiap CACHE_EXPIRY detik
         time.sleep(CACHE_EXPIRY)
 
 # Telegram main loop
@@ -105,9 +75,6 @@ def main():
     offset = None
     Thread(target=auto_check, daemon=True).start()
     print("Bot started...")
-
-    # preload semua TA sesuai interval saat bot start
-    preload_all_ta()
 
     while True:
         try:
@@ -119,14 +86,14 @@ def main():
                     text = message.get("text", "").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/ta_all\n/screener\n/set_interval <INTERVAL>\n/set_cache <SECONDS>\n/set_filter <KEY>=<VALUE>")
+                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/ta_all\n/screener\n/set_interval <INTERVAL>\n/set_cache <SECONDS>")
                         subscribers.add(chat_id)
 
                     elif text.startswith("/ta "):
                         parts = text.split()
                         if len(parts) == 2:
                             symbol = parts[1].upper()
-                            indicators, summary = get_cached_ta(symbol)
+                            indicators, summary = get_tv_ta(symbol)
                             if indicators:
                                 msg = f"{symbol} TA:\n"
                                 for k,v in indicators.items():
@@ -137,45 +104,9 @@ def main():
                                 send_message(chat_id, f"TA {symbol} tidak tersedia")
 
                     elif text.startswith("/ta_all"):
-                        msg = "TA semua ticker IDX:\n"
-                        preload_all_ta()  # update semua TA
-                        for t in tickers_list:
-                            indicators, summary = get_cached_ta(t)
-                            if indicators:
-                                msg += f"{t}: Summary {summary.get('RECOMMENDATION')}\n"
-                        send_message(chat_id, msg)
-
-                    elif text.startswith("/screener"):
-                        screened = run_screener()
-                        if screened:
-                            msg = "🔍 Screener IDX:\n" + "\n".join(screened)
-                        else:
-                            msg = "Tidak ada saham memenuhi kriteria saat ini."
-                        send_message(chat_id, msg)
-
-                    elif text.startswith("/set_interval"):
-                        parts = text.split()
-                        if len(parts) == 2:
-                            val = parts[1].upper()
-                            INTERVAL = getattr(Interval, val, INTERVAL)
-                            send_message(chat_id, f"Interval TA diubah ke {INTERVAL}")
-
-                    elif text.startswith("/set_cache"):
-                        parts = text.split()
-                        if len(parts) == 2:
-                            try:
-                                CACHE_EXPIRY = int(parts[1])
-                                send_message(chat_id, f"Cache expiry diubah ke {CACHE_EXPIRY} detik")
-                            except:
-                                send_message(chat_id, "Format salah. Gunakan: /set_cache <detik>")
-
-                    elif text.startswith("/set_filter"):
-                        parts = text.split()[1:]
-                        for p in parts:
-                            if '=' in p:
-                                k,v = p.split('=',1)
-                                screener_filters[k] = v
-                        send_message(chat_id, f"Filter screener diperbarui: {screener_filters}")
+                        send_message(chat_id, "Memulai pengambilan TA semua ticker...")
+                        ta_all_loop()  # jalankan perulangan dan simpan data
+                        send_message(chat_id, "Selesai mengambil TA semua ticker dan tersimpan di ta_idx_1day.xlsx")
 
                     offset = update["update_id"] + 1
         except Exception as e:
