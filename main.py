@@ -1,37 +1,44 @@
 import time
 import os
 import requests
-from tradingview_ta import TA_Handler, Interval, Exchange
+import pandas as pd
+import pandas_ta as ta
+import yfinance as yf
+import csv
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
-# Daftar ticker yang ingin dipantau
-TICKERS = ["BBCA", "BBRI", "TLKM", "UNVR", "ANTM"]
+# Load semua ticker IDX dari CSV
+def load_idx_tickers(file_path="tickers_idx.csv"):
+    tickers = []
+    with open(file_path, newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            tickers.append(row['Ticker'] + ".JK")  # Yahoo Finance format IDX
+    return tickers
 
 def send_message(chat_id, text):
-    url = f"{URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    requests.post(url, json=payload)
+    requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
 
 def check_macd_golden_cross(ticker):
-    handler = TA_Handler(
-        symbol=ticker,
-        screener="indonesia",
-        exchange="IDX",
-        interval=Interval.INTERVAL_1_MINUTE
-    )
-    analysis = handler.get_analysis()
-    macd = analysis.indicators.get("MACD.macd")
-    signal = analysis.indicators.get("MACD.signal")
-    # Golden Cross: MACD baru saja melintasi signal dari bawah ke atas
-    if macd and signal and macd > signal:
-        return True
+    try:
+        df = yf.download(ticker, period="2d", interval="1m")  # ambil 2 hari terakhir
+        if len(df) < 26:  # pastikan cukup data
+            return False
+        macd = ta.macd(df['Close'])
+        df = df.join(macd)
+        if df['MACD_12_26_9'].iloc[-2] < df['MACDs_12_26_9'].iloc[-2] and \
+           df['MACD_12_26_9'].iloc[-1] > df['MACDs_12_26_9'].iloc[-1]:
+            return True
+    except Exception as e:
+        print(f"Error {ticker}: {e}")
     return False
 
 def main():
     subscribers = set()
     offset = None
+    tickers = load_idx_tickers("tickers_idx.csv")
 
     while True:
         # Ambil update Telegram
@@ -41,16 +48,16 @@ def main():
             if message:
                 chat_id = message["chat"]["id"]
                 text = message.get("text", "").lower()
-                subscribers.add(chat_id)
                 if "/start" in text:
-                    send_message(chat_id, "Bot MACD Golden Cross setiap 1 menit aktif. Kamu akan mendapat notifikasi.")
+                    send_message(chat_id, "Bot MACD Golden Cross IDX aktif. Kamu akan menerima notifikasi otomatis.")
+                    subscribers.add(chat_id)
                 offset = update["update_id"] + 1
 
-        # Cek MACD setiap 60 detik
-        for ticker in TICKERS:
+        # Screening semua ticker tiap 1 menit
+        for ticker in tickers:
             if check_macd_golden_cross(ticker):
                 for chat_id in subscribers:
-                    send_message(chat_id, f"📈 MACD Golden Cross terdeteksi di {ticker}!")
+                    send_message(chat_id, f"📈 MACD Golden Cross terdeteksi pada {ticker}!")
 
         time.sleep(60)
 
