@@ -7,39 +7,27 @@ from tradingview_ta import TA_Handler, Interval
 # ---------------- Config Telegram ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
-UPDATE_INTERVAL = 600  # 10 menit
+UPDATE_INTERVAL = 600  # 10 menit default
 TA_INTERVAL = Interval.INTERVAL_1_HOUR
 
-# Screener control
 screener_thread_running = False
-last_screener_results = {}
+last_crossup_results = {}
 default_delay = 2
 current_delay = default_delay
-
-# Filter khusus RSI > 50
-criteria = {"RSI": ">50"}
-
-# Cache TA
 ta_cache = {}
 cache_expiry = 600
 
-# ---------------- Ambil ticker ----------------
+# Ambil ticker IDX
 def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
     payload = {"filter":[],"options":{"lang":"en"},"symbols":{"query":{"types":[]}},"columns":["name"]}
     try:
         r = requests.post(url, json=payload)
         data = r.json()
-        tickers = []
-        for item in data.get('data', []):
-            d_values = item.get('d', [])
-            if len(d_values) > 0:
-                name = d_values[0]
-                if name:
-                    tickers.append(name.replace('IDX:', ''))
+        tickers = [item['d'][0].replace('IDX:', '') for item in data.get('data', []) if item.get('d')]
         return tickers
     except Exception as e:
-        send_error(f"Gagal ambil ticker: {e}")
+        print(f"ERROR ambil ticker: {e}")
         return []
 
 tickers_list = load_idx_tickers_from_tv()
@@ -49,16 +37,7 @@ def send_message(chat_id, text):
     try:
         requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
     except Exception as e:
-        send_error(f"Error sending message: {e}")
-
-def send_error(text):
-    admin_chat_id = os.environ.get("ADMIN_CHAT_ID")
-    if admin_chat_id:
-        try:
-            requests.post(f"{URL}/sendMessage", json={"chat_id": admin_chat_id, "text": f"⚠️ ERROR: {text}"})
-        except:
-            print(f"ERROR sending error message: {text}")
-    print(f"ERROR: {text}")
+        print(f"Error sending message: {e}")
 
 # ---------------- Ambil TA per ticker adaptif ----------------
 def get_tv_ta(symbol, retries=5):
@@ -76,10 +55,6 @@ def get_tv_ta(symbol, retries=5):
                 "summary": analysis.summary,
                 "timestamp": time.time()
             }
-
-            if current_delay > default_delay:
-                current_delay = max(default_delay, current_delay - 0.5)
-
             time.sleep(current_delay)
             return analysis.indicators, analysis.summary
 
@@ -93,11 +68,11 @@ def get_tv_ta(symbol, retries=5):
             time.sleep(current_delay)
     return None, None
 
-# ---------------- Screener RSI > 50 ----------------
-def run_screener_rsi(chat_id):
-    global last_screener_results
+# ---------------- Screener EMA5 crossup EMA20 ----------------
+def run_screener_ema_crossup(chat_id):
+    global last_crossup_results
     batch_size = 10
-    any_lolos = False
+    any_crossup = False
 
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
@@ -106,30 +81,34 @@ def run_screener_rsi(chat_id):
             if not indicators:
                 continue
 
-            val = indicators.get("RSI")
-            match = val is not None and val > 50
+            ema5 = indicators.get("EMA5")
+            ema20 = indicators.get("EMA20")
 
-            if match:
-                any_lolos = True
-                if ticker not in last_screener_results or last_screener_results[ticker] != "RSI>50":
-                    msg = f"✅ {ticker} RSI>50!\nRSI: {val}\nSummary: {summary.get('RECOMMENDATION')}"
+            if ema5 is None or ema20 is None:
+                continue
+
+            crossup = ema5 > ema20
+            if crossup:
+                any_crossup = True
+                if ticker not in last_crossup_results or not last_crossup_results[ticker]:
+                    msg = f"✅ {ticker} EMA5 crossup EMA20!\nEMA5: {ema5}\nEMA20: {ema20}\nSummary: {summary.get('RECOMMENDATION')}"
                     send_message(chat_id, msg)
-                    last_screener_results[ticker] = "RSI>50"
+                    last_crossup_results[ticker] = True
             else:
-                if ticker in last_screener_results:
-                    send_message(chat_id, f"❌ {ticker} keluar dari RSI>50")
-                    del last_screener_results[ticker]
+                if ticker in last_crossup_results and last_crossup_results[ticker]:
+                    send_message(chat_id, f"❌ {ticker} keluar dari EMA5 crossup EMA20")
+                    last_crossup_results[ticker] = False
 
             time.sleep(0.5)
 
-    if not any_lolos:
-        send_message(chat_id, "⚠️ Screener selesai, tidak ada ticker RSI>50 saat ini.")
+    if not any_crossup:
+        send_message(chat_id, "⚠️ Screener selesai, tidak ada EMA5 crossup EMA20 saat ini.")
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
     global screener_thread_running
     while screener_thread_running:
-        run_screener_rsi(chat_id)
+        run_screener_ema_crossup(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
 # ---------------- Telegram Main Loop ----------------
@@ -146,7 +125,7 @@ def main():
                     text = message.get("text", "").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/screener_start\n/screener_stop\n/set_interval")
+                        send_message(chat_id, "Bot EMA crossup aktif.\nPerintah:\n/ta <TICKER>\n/screener_start\n/screener_stop\n/set_interval")
 
                     elif text.startswith("/ta "):
                         parts = text.split()
@@ -166,14 +145,14 @@ def main():
                         if not screener_thread_running:
                             screener_thread_running = True
                             threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
-                            send_message(chat_id, f"✅ Screener RSI>50 realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
+                            send_message(chat_id, f"✅ Screener EMA5 crossup EMA20 realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
                         else:
                             send_message(chat_id, "Screener sudah berjalan.")
 
                     elif text.startswith("/screener_stop"):
                         if screener_thread_running:
                             screener_thread_running = False
-                            send_message(chat_id, "🛑 Screener realtime dihentikan.")
+                            send_message(chat_id, "🛑 Screener dihentikan.")
                         else:
                             send_message(chat_id, "Screener belum berjalan.")
 
@@ -190,13 +169,13 @@ def main():
                             }
                             if interval_str in mapping:
                                 TA_INTERVAL = mapping[interval_str]
-                                send_message(chat_id, f"✅ Interval TA diperbarui menjadi {interval_str}")
+                                send_message(chat_id, f"✅ Interval diperbarui menjadi {interval_str}")
                             else:
                                 send_message(chat_id, "Format interval salah. Gunakan: 1m,5m,15m,1h,1d")
 
                     offset = update["update_id"] + 1
         except Exception as e:
-            send_error(f"Main loop error: {e}")
+            print(f"Main loop error: {e}")
         time.sleep(5)
 
 if __name__ == "__main__":
