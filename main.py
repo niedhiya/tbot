@@ -2,7 +2,6 @@ import time
 import os
 import requests
 import pandas as pd
-from threading import Thread
 from tradingview_ta import TA_Handler, Interval
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -16,6 +15,10 @@ def load_idx_tickers(file_path="tickers_idx.xlsx"):
 
 tickers_list, tickers_df = load_idx_tickers()
 
+INTERVAL = Interval.INTERVAL_1_DAY
+CACHE_EXPIRY = 60
+ta_cache = {}  # {ticker: {indicators, summary}}
+
 # Telegram helper
 def send_message(chat_id, text):
     try:
@@ -23,59 +26,46 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# TradingView TA
-INTERVAL = Interval.INTERVAL_1_DAY  # default daily interval
-CACHE_EXPIRY = 60  # detik
+# TradingView TA dengan retry
+def get_tv_ta(symbol, retries=3):
+    for i in range(retries):
+        try:
+            handler = TA_Handler(symbol=symbol, screener="indonesia", exchange="IDX", interval=INTERVAL)
+            analysis = handler.get_analysis()
+            return analysis.indicators, analysis.summary
+        except Exception as e:
+            print(f"[ERROR] {symbol} attempt {i+1} failed: {e}")
+            time.sleep(1)
+    return None, None
 
-ta_cache = {}  # {ticker: {'indicators': ..., 'summary': ...}}
-
-# Ambil TA per ticker
-def get_tv_ta(symbol):
-    try:
-        handler = TA_Handler(symbol=symbol, screener="indonesia", exchange="IDX", interval=INTERVAL)
-        analysis = handler.get_analysis()
-        return analysis.indicators, analysis.summary
-    except Exception as e:
-        print(f"[ERROR] Ticker {symbol} gagal diambil: {e}")
-        return None, None
-
-# Perulangan /ta_all simpan data
-def ta_all_loop(save_to_file=True):
+# /ta_all dengan log ke Telegram
+def ta_all_loop(chat_id):
+    log_msgs = []
     for t in tickers_list:
         indicators, summary = get_tv_ta(t)
         if indicators:
             ta_cache[t] = {'indicators': indicators, 'summary': summary}
-            print(f"TA {t} berhasil diambil.")
+            msg = f"✅ {t}: TA berhasil diambil. Summary: {summary.get('RECOMMENDATION')}"
         else:
-            print(f"TA {t} gagal diambil.")
-        time.sleep(1)  # delay supaya tidak overload request
+            msg = f"❌ {t}: Gagal diambil"
+        log_msgs.append(msg)
+        send_message(chat_id, msg)  # kirim tiap ticker agar bisa dibaca real-time
+        time.sleep(1)  # delay supaya tidak kena rate limit
 
-    if save_to_file:
-        df_list = []
-        for ticker, data in ta_cache.items():
-            row = {'Ticker': ticker}
-            row.update(data['indicators'])
-            row.update({'Summary': data['summary'].get('RECOMMENDATION')})
-            df_list.append(row)
-        df = pd.DataFrame(df_list)
-        df.to_excel("ta_idx_1day.xlsx", index=False)
-        print("Semua data TA tersimpan di ta_idx_1day.xlsx")
+    # Simpan ke Excel setelah selesai
+    df_list = []
+    for ticker, data in ta_cache.items():
+        row = {'Ticker': ticker}
+        row.update(data['indicators'])
+        row.update({'Summary': data['summary'].get('RECOMMENDATION')})
+        df_list.append(row)
+    df = pd.DataFrame(df_list)
+    df.to_excel("ta_idx_1day.xlsx", index=False)
+    send_message(chat_id, "✅ Semua TA tersimpan di ta_idx_1day.xlsx")
 
-# Telegram bot untuk /ta_all
-subscribers = set()
-
-def auto_check():
-    while True:
-        # bisa dipakai untuk screener otomatis tiap CACHE_EXPIRY detik
-        time.sleep(CACHE_EXPIRY)
-
-# Telegram main loop
+# Telegram main loop sederhana
 def main():
-    global INTERVAL, CACHE_EXPIRY
     offset = None
-    Thread(target=auto_check, daemon=True).start()
-    print("Bot started...")
-
     while True:
         try:
             updates = requests.get(f"{URL}/getUpdates", params={"offset": offset, "timeout":100}).json()
@@ -83,30 +73,15 @@ def main():
                 message = update.get("message")
                 if message:
                     chat_id = message["chat"]["id"]
-                    text = message.get("text", "").lower()
+                    text = message.get("text","").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/ta_all\n/screener\n/set_interval <INTERVAL>\n/set_cache <SECONDS>")
-                        subscribers.add(chat_id)
-
-                    elif text.startswith("/ta "):
-                        parts = text.split()
-                        if len(parts) == 2:
-                            symbol = parts[1].upper()
-                            indicators, summary = get_tv_ta(symbol)
-                            if indicators:
-                                msg = f"{symbol} TA:\n"
-                                for k,v in indicators.items():
-                                    msg += f"{k}: {v}\n"
-                                msg += f"Summary: {summary.get('RECOMMENDATION')}"
-                                send_message(chat_id, msg)
-                            else:
-                                send_message(chat_id, f"TA {symbol} tidak tersedia")
+                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/ta_all")
 
                     elif text.startswith("/ta_all"):
-                        send_message(chat_id, "Memulai pengambilan TA semua ticker...")
-                        ta_all_loop()  # jalankan perulangan dan simpan data
-                        send_message(chat_id, "Selesai mengambil TA semua ticker dan tersimpan di ta_idx_1day.xlsx")
+                        send_message(chat_id, "Mulai mengambil TA semua ticker IDX...")
+                        ta_all_loop(chat_id)
+                        send_message(chat_id, "✅ Selesai semua ticker.")
 
                     offset = update["update_id"] + 1
         except Exception as e:
