@@ -4,3 +4,4 @@ openpyxl>=3.1.2
 tradingview_ta>=1.5.8
 yfinance
 TA-Lib
+beautifulsoup4
