@@ -11,7 +11,7 @@ URL = f"https://api.telegram.org/bot{TOKEN}"
 # Load semua ticker IDX dari file XLSX
 def load_idx_tickers(file_path="tickers_idx.xlsx"):
     df = pd.read_excel(file_path)
-    tickers = df['Code'].astype(str).tolist()  # sesuaikan kolom di XLSX IDX
+    tickers = df['Code'].astype(str).tolist()  # kolom 'Code' sesuai XLSX IDX
     tickers = [t + ".JK" for t in tickers]    # format Yahoo Finance IDX
     return tickers
 
@@ -23,14 +23,10 @@ def send_message(chat_id, text):
 
 def check_macd_golden_cross(ticker):
     try:
-        df = yf.download(ticker, period="7d", interval="5m")  # 5 menit interval
-        if df.empty:
-            print(f"{ticker}: No data")
+        df = yf.download(ticker, period="7d", interval="5m")
+        if df.empty or len(df) < 26:
+            print(f"{ticker}: Not enough data")
             return False
-        if len(df) < 26:
-            print(f"{ticker}: Not enough data ({len(df)} rows)")
-            return False
-
         macd, signal, hist = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
         # Golden Cross: MACD melintasi signal dari bawah ke atas
         if macd.iloc[-2] < signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1]:
@@ -44,15 +40,27 @@ def check_macd_golden_cross(ticker):
 
 def main():
     subscribers = set()
-    offset = None
+
+    # Ambil offset awal agar tidak membaca update lama
+    try:
+        updates = requests.get(f"{URL}/getUpdates", params={"timeout":100}).json()
+        if updates["result"]:
+            offset = updates["result"][-1]["update_id"] + 1
+        else:
+            offset = None
+    except Exception as e:
+        print(f"Error initializing offset: {e}")
+        offset = None
+
     tickers = load_idx_tickers("tickers_idx.xlsx")
     print(f"{len(tickers)} tickers loaded.")
 
     while True:
-        # Ambil update Telegram
+        # Ambil update Telegram baru
         try:
-            updates = requests.get(f"{URL}/getUpdates", params={"offset": offset, "timeout": 100}).json()
+            updates = requests.get(f"{URL}/getUpdates", params={"offset": offset, "timeout":100}).json()
             for update in updates.get("result", []):
+                print("Update received:", update)
                 message = update.get("message")
                 if message:
                     chat_id = message["chat"]["id"]
