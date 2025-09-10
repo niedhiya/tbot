@@ -228,8 +228,6 @@ def main():
                                 "5m": Interval.INTERVAL_5_MINUTES,
                                 "15m": Interval.INTERVAL_15_MINUTES,
                                 "1h": Interval.INTERVAL_1_HOUR,
-                                "3h": Interval.INTERVAL_3_HOURS,
-                                "4h": Interval.INTERVAL_4_HOURS,
                                 "1d": Interval.INTERVAL_1_DAY
                             }
                             if interval_str in mapping:
