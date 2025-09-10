@@ -2,23 +2,19 @@ import time
 import os
 import requests
 import threading
-from tradingview_ta import TA_Handler, Interval
+from tradingview_ta import get_multiple_analysis, Interval
 
 # ---------------- Config Telegram ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 UPDATE_INTERVAL = 600  # Screener refresh tiap 10 menit
-TA_INTERVAL = Interval.INTERVAL_1_HOUR  # Interval 1 jam
+TA_INTERVAL = Interval.INTERVAL_1_HOUR  # Interval default 1 jam
 
 screener_thread_running = False
 last_crossup_results = {}
 
-# Delay antar request
-default_delay = 10   # 10 detik per batch
-current_delay = default_delay
-
-ta_cache = {}
-cache_expiry = 600  # 10 menit cache TA
+# Delay per batch tetap
+DELAY = 10   # 10 detik antar batch
 
 # ---------------- Ambil ticker IDX ----------------
 def load_idx_tickers_from_tv():
@@ -42,47 +38,30 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# ---------------- Ambil TA per ticker ----------------
-def get_tv_ta(symbol, retries=5):
-    global current_delay
-    for attempt in range(retries):
-        try:
-            cached = ta_cache.get(symbol)
-            if cached and time.time() - cached['timestamp'] < cache_expiry:
-                return cached['indicators']
-
-            handler = TA_Handler(symbol=symbol, screener="indonesia", exchange="IDX", interval=TA_INTERVAL)
-            analysis = handler.get_analysis()
-            ta_cache[symbol] = {
-                "indicators": analysis.indicators,
-                "timestamp": time.time()
-            }
-
-            time.sleep(current_delay)
-            return analysis.indicators
-
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str:
-                current_delay += 1
-                print(f"⚠️ {symbol} 429 detected, increasing delay to {current_delay} sec")
-            else:
-                print(f"{symbol} attempt {attempt+1} failed: {e}")
-            time.sleep(current_delay)
-    return None
-
 # ---------------- Screener EMA5 crossup EMA20 ----------------
 def run_screener_ema_crossup(chat_id):
     global last_crossup_results
     batch_size = 10
     any_crossup = False
 
+    # Ambil batch ticker
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
-        for ticker in batch:
-            indicators = get_tv_ta(ticker)
-            if not indicators:
-                continue
+        try:
+            # Gunakan get_multiple_analysis untuk batch
+            analyses = get_multiple_analysis(
+                screener="indonesia",
+                interval=TA_INTERVAL,
+                symbols=[f"IDX:{t}" for t in batch]
+            )
+        except Exception as e:
+            print(f"Batch error: {e}")
+            time.sleep(DELAY)
+            continue
+
+        for symbol_full, data in analyses.items():
+            ticker = symbol_full.replace("IDX:", "")
+            indicators = data.indicators
 
             ema5 = indicators.get("EMA5")
             ema20 = indicators.get("EMA20")
@@ -102,7 +81,7 @@ def run_screener_ema_crossup(chat_id):
                     send_message(chat_id, f"❌ {ticker} keluar dari EMA5 crossup EMA20")
                     last_crossup_results[ticker] = False
 
-            time.sleep(0.5)
+        time.sleep(DELAY)  # Delay antar batch
 
     if not any_crossup:
         send_message(chat_id, "⚠️ Screener selesai, tidak ada EMA5 crossup EMA20 saat ini.")
@@ -165,7 +144,7 @@ def main():
                     offset = update["update_id"] + 1
         except Exception as e:
             print(f"Main loop error: {e}")
-        time.sleep(5)
+        time.sleep(10)
 
 if __name__ == "__main__":
     main()
