@@ -9,15 +9,12 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
 # Interval default dan update
-TA_INTERVAL = Interval.INTERVAL_1_MINUTE
+TA_INTERVAL = Interval.INTERVAL_1_HOUR
 UPDATE_INTERVAL = 600  # 10 menit
 
 # Cache TA
 ta_cache = {}
 cache_expiry = 600  # detik
-
-# User-defined filter
-criteria = {}
 
 # Thread control
 screener_thread_running = False
@@ -99,71 +96,48 @@ def get_tv_ta(symbol, retries=5):
             time.sleep(current_delay)
     return None, None
 
-# ---------------- Screener ----------------
-def run_screener(chat_id):
+# ---------------- Screener BUY-only ----------------
+def run_screener_buy_only(chat_id):
     global last_screener_results
-    if not criteria:
-        send_message(chat_id, "❌ Silakan set kriteria screener terlebih dahulu")
-        return
-
     batch_size = 10
-    any_lolos = False  # flag jika ada ticker lolos
+    any_buy = False
 
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
         for ticker in batch:
             indicators, summary = get_tv_ta(ticker)
-            if not indicators:
+            if not summary:
                 continue
 
-            match = True
-            for key, condition in criteria.items():
-                val = indicators.get(key)
-                if val is None:
-                    match = False
-                    break
-                if isinstance(condition, str):
-                    if condition.startswith("<") and val >= float(condition[1:]):
-                        match = False
-                        break
-                    elif condition.startswith(">") and val <= float(condition[1:]):
-                        match = False
-                        break
-                    elif condition == "cross_up" and summary.get('RECOMMENDATION') != "BUY":
-                        match = False
-                        break
-                    elif condition == "cross_down" and summary.get('RECOMMENDATION') != "SELL":
-                        match = False
-                        break
-
-            if match:
-                any_lolos = True
-                if ticker not in last_screener_results or last_screener_results[ticker] != summary.get('RECOMMENDATION'):
-                    msg = f"✅ {ticker} lolos screener!\nSummary: {summary.get('RECOMMENDATION')}\nIndikator:\n"
+            recommendation = summary.get("RECOMMENDATION")
+            if recommendation == "BUY":
+                any_buy = True
+                if ticker not in last_screener_results or last_screener_results[ticker] != "BUY":
+                    msg = f"✅ {ticker} BUY!\nSummary: {recommendation}\nIndikator:\n"
                     for k, v in indicators.items():
                         msg += f"{k}: {v}\n"
                     send_message(chat_id, msg)
-                    last_screener_results[ticker] = summary.get('RECOMMENDATION')
+                    last_screener_results[ticker] = "BUY"
             else:
                 if ticker in last_screener_results:
-                    send_message(chat_id, f"❌ {ticker} keluar dari screener")
+                    send_message(chat_id, f"❌ {ticker} keluar dari BUY")
                     del last_screener_results[ticker]
 
             time.sleep(0.5)
 
-    if not any_lolos:
-        send_message(chat_id, "⚠️ Screener selesai, tidak ada ticker yang lolos kriteria saat ini.")
+    if not any_buy:
+        send_message(chat_id, "⚠️ Screener selesai, tidak ada ticker BUY saat ini.")
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
     global screener_thread_running
     while screener_thread_running:
-        run_screener(chat_id)
+        run_screener_buy_only(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
 # ---------------- Telegram Main Loop ----------------
 def main():
-    global TA_INTERVAL, criteria, screener_thread_running
+    global TA_INTERVAL, screener_thread_running
     offset = None
     while True:
         try:
@@ -175,7 +149,7 @@ def main():
                     text = message.get("text", "").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/screener_start\n/screener_stop\n/set_criteria\n/set_interval")
+                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/screener_start\n/screener_stop\n/set_interval")
 
                     elif text.startswith("/ta "):
                         parts = text.split()
@@ -195,7 +169,7 @@ def main():
                         if not screener_thread_running:
                             screener_thread_running = True
                             threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
-                            send_message(chat_id, f"✅ Screener realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
+                            send_message(chat_id, f"✅ Screener BUY-only realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
                         else:
                             send_message(chat_id, "Screener sudah berjalan.")
 
@@ -205,19 +179,6 @@ def main():
                             send_message(chat_id, "🛑 Screener realtime dihentikan.")
                         else:
                             send_message(chat_id, "Screener belum berjalan.")
-
-                    elif text.startswith("/set_criteria"):
-                        parts = text.split()
-                        new_criteria = {}
-                        for p in parts[1:]:
-                            if "=" in p:
-                                k, v = p.split("=")
-                                new_criteria[k] = v
-                        if new_criteria:
-                            criteria = new_criteria
-                            send_message(chat_id, f"✅ Kriteria screener diperbarui: {criteria}")
-                        else:
-                            send_message(chat_id, "Format salah. Contoh: /set_criteria MACD=cross_up RSI=<30")
 
                     elif text.startswith("/set_interval"):
                         parts = text.split()
@@ -234,7 +195,7 @@ def main():
                                 TA_INTERVAL = mapping[interval_str]
                                 send_message(chat_id, f"✅ Interval TA diperbarui menjadi {interval_str}")
                             else:
-                                send_message(chat_id, "Format interval salah. Contoh: /set_interval 1m / 5m / 1h / 3h / 4h / 1d")
+                                send_message(chat_id, "Format interval salah. Gunakan: 1m,5m,15m,1h,1d")
 
                     offset = update["update_id"] + 1
         except Exception as e:
