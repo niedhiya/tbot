@@ -1,3 +1,4 @@
 requests
-tradingview_ta
-
+yfinance
+pandas
+pandas_ta
