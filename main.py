@@ -21,18 +21,7 @@ user_criteria = {}
 user_interval = {}
 default_interval = "1d"
 
-default_criteria = {
-    "MACD": None,
-    "RSI_min": None,
-    "RSI_max": None,
-    "STOCHASTIC_min": None,
-    "STOCHASTIC_max": None,
-    "EMA50_min": None,
-    "EMA50_max": None,
-    "VOLUME_min": None,
-    "VOLUME_max": None,
-    "Summary": None
-}
+default_criteria = {}
 
 def send_message(chat_id, text):
     try:
