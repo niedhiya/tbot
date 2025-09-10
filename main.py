@@ -24,7 +24,7 @@ def send_message(chat_id, text):
         print(f"Error sending message: {e}")
 
 # TradingView TA
-INTERVAL = Interval.INTERVAL_1_DAY  # default
+INTERVAL = Interval.INTERVAL_1_MINUTE  # default intraday
 CACHE_EXPIRY = 60  # detik
 
 ta_cache = {}  # {ticker: {'time': timestamp, 'data': indicators, 'summary': summary}}
@@ -47,9 +47,12 @@ def get_cached_ta(symbol):
         ta_cache[symbol] = {'time': now, 'data': indicators, 'summary': summary}
     return indicators, summary
 
-# Screener
+# Screener dynamic
 screener_filters = {
-    'Summary': 'BUY',  # default filter
+    'MACD': 'Golden Cross',  # contoh default filter
+    'RSI': '<70',
+    'Stochastic_K': '<80',
+    'Summary': None  # abaikan summary default
 }
 
 def run_screener():
@@ -60,8 +63,14 @@ def run_screener():
             continue
         passed = True
         for key, condition in screener_filters.items():
-            if key in summary and summary[key] != condition:
-                passed = False
+            if key in summary and condition is not None:
+                if summary[key] != condition:
+                    passed = False
+            if key in indicators and '<' in condition:
+                threshold = float(condition.replace('<',''))
+                val = indicators[key]
+                if val >= threshold:
+                    passed = False
         if passed:
             results.append(t)
     return results
@@ -73,7 +82,7 @@ def auto_check():
     while True:
         screened = run_screener()
         if screened:
-            msg = "🔍 Screener IDX (Summary BUY):\n" + "\n".join(screened)
+            msg = "🔍 Screener IDX (Filter Dinamis):\n" + "\n".join(screened)
             for chat_id in subscribers:
                 send_message(chat_id, msg)
         time.sleep(CACHE_EXPIRY)
@@ -95,7 +104,7 @@ def main():
                     text = message.get("text", "").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/ta_all\n/screener\n/set_interval <INTERVAL>\n/set_cache <SECONDS>")
+                        send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/ta_all\n/screener\n/set_interval <INTERVAL>\n/set_cache <SECONDS>\n/set_filter <KEY>=<VALUE>")
                         subscribers.add(chat_id)
 
                     elif text.startswith("/ta "):
@@ -143,6 +152,14 @@ def main():
                                 send_message(chat_id, f"Cache expiry diubah ke {CACHE_EXPIRY} detik")
                             except:
                                 send_message(chat_id, "Format salah. Gunakan: /set_cache <detik>")
+
+                    elif text.startswith("/set_filter"):
+                        parts = text.split()[1:]
+                        for p in parts:
+                            if '=' in p:
+                                k,v = p.split('=',1)
+                                screener_filters[k] = v
+                        send_message(chat_id, f"Filter screener diperbarui: {screener_filters}")
 
                     offset = update["update_id"] + 1
         except Exception as e:
