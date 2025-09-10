@@ -8,6 +8,7 @@ import talib
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
+# Load ticker IDX
 def load_idx_tickers(file_path="tickers_idx.xlsx"):
     df = pd.read_excel(file_path)
     tickers = df['Code'].astype(str).tolist()
@@ -16,12 +17,14 @@ def load_idx_tickers(file_path="tickers_idx.xlsx"):
 
 tickers_list, tickers_df = load_idx_tickers("tickers_idx.xlsx")
 
+# Telegram helper
 def send_message(chat_id, text):
     try:
         requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
     except Exception as e:
         print(f"Error sending message: {e}")
 
+# Harga saham
 def get_price(ticker):
     try:
         data = yf.Ticker(ticker).history(period="1d")
@@ -34,18 +37,29 @@ def get_price(ticker):
     except:
         return None
 
+# Analisis teknikal dengan perbaikan
 def get_ta(ticker):
     try:
-        df = yf.download(ticker, period="30d", interval="1d")
+        df = yf.download(ticker, period="60d", interval="1d")  # gunakan 60 hari
+        print(f"{ticker} data length: {len(df)}")
         if df.empty or len(df) < 26:
+            print("Data tidak cukup untuk TA")
             return None
+
         macd, signal, hist = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
+        rsi = talib.RSI(df['Close'], timeperiod=14)
+
+        # cek NaN
+        if macd.isna().any() or signal.isna().any() or rsi.isna().any():
+            print("Data TA mengandung NaN")
+            return None
+
         macd_status = "Neutral"
         if macd.iloc[-2] < signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1]:
             macd_status = "Golden Cross ✅"
         elif macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]:
             macd_status = "Death Cross ❌"
-        rsi = talib.RSI(df['Close'], timeperiod=14)
+
         rsi_val = rsi.iloc[-1]
         if rsi_val > 70:
             rsi_status = f"{rsi_val:.2f} (Overbought)"
@@ -53,14 +67,18 @@ def get_ta(ticker):
             rsi_status = f"{rsi_val:.2f} (Oversold)"
         else:
             rsi_status = f"{rsi_val:.2f} (Normal)"
+
         sma20 = talib.SMA(df['Close'], timeperiod=20).iloc[-1]
         ema50 = talib.EMA(df['Close'], timeperiod=50).iloc[-1]
         trend_sma = "↑" if df['Close'].iloc[-1] > sma20 else "↓"
         trend_ema = "↑" if df['Close'].iloc[-1] > ema50 else "↓"
+
         return macd_status, rsi_status, sma20, trend_sma, ema50, trend_ema
-    except:
+    except Exception as e:
+        print(f"TA error for {ticker}: {e}")
         return None
 
+# Top Gainers / Losers
 def get_top_gainers_losers():
     results = []
     for t in tickers_list:
@@ -73,6 +91,7 @@ def get_top_gainers_losers():
     top_losers = df.sort_values('Change', ascending=True).head(5)
     return top_gainers, top_losers
 
+# Screener otomatis
 def run_screener():
     screened = []
     for t in tickers_list:
@@ -83,6 +102,7 @@ def run_screener():
                 screened.append(t)
     return screened
 
+# Main loop
 def main():
     subscribers = set()
     offset = None
