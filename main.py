@@ -37,43 +37,43 @@ def get_price(ticker):
     except:
         return None
 
-# Analisis teknikal dengan perbaikan
-def get_ta(ticker):
+# TA lengkap
+def get_ta_full(ticker):
     try:
-        df = yf.download(ticker, period="60d", interval="1d")  # gunakan 60 hari
-        print(f"{ticker} data length: {len(df)}")
+        df = yf.download(ticker, period="90d", interval="1d")
         if df.empty or len(df) < 26:
-            print("Data tidak cukup untuk TA")
             return None
 
-        macd, signal, hist = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
-        rsi = talib.RSI(df['Close'], timeperiod=14)
-
-        # cek NaN
-        if macd.isna().any() or signal.isna().any() or rsi.isna().any():
-            print("Data TA mengandung NaN")
-            return None
-
+        macd, macd_signal, _ = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
         macd_status = "Neutral"
-        if macd.iloc[-2] < signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1]:
+        if macd.iloc[-2] < macd_signal.iloc[-2] and macd.iloc[-1] > macd_signal.iloc[-1]:
             macd_status = "Golden Cross ✅"
-        elif macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]:
+        elif macd.iloc[-2] > macd_signal.iloc[-2] and macd.iloc[-1] < macd_signal.iloc[-1]:
             macd_status = "Death Cross ❌"
 
-        rsi_val = rsi.iloc[-1]
-        if rsi_val > 70:
-            rsi_status = f"{rsi_val:.2f} (Overbought)"
-        elif rsi_val < 30:
-            rsi_status = f"{rsi_val:.2f} (Oversold)"
-        else:
-            rsi_status = f"{rsi_val:.2f} (Normal)"
+        rsi_val = talib.RSI(df['Close'], timeperiod=14).iloc[-1]
+        ema50_val = talib.EMA(df['Close'], timeperiod=50).iloc[-1]
 
-        sma20 = talib.SMA(df['Close'], timeperiod=20).iloc[-1]
-        ema50 = talib.EMA(df['Close'], timeperiod=50).iloc[-1]
-        trend_sma = "↑" if df['Close'].iloc[-1] > sma20 else "↓"
-        trend_ema = "↑" if df['Close'].iloc[-1] > ema50 else "↓"
+        slowk, slowd = talib.STOCH(df['High'], df['Low'], df['Close'], fastk_period=14, slowk_period=3, slowk_matype=0, slowd_period=3, slowd_matype=0)
+        slowk_val = slowk.iloc[-1]
+        slowd_val = slowd.iloc[-1]
 
-        return macd_status, rsi_status, sma20, trend_sma, ema50, trend_ema
+        stochrsi_val = talib.STOCHRSI(df['Close'], timeperiod=14, fastk_period=3, fastd_period=3, fastd_matype=0).iloc[-1]
+
+        volume_val = df['Volume'].iloc[-1]
+        volume_ma20 = talib.SMA(df['Volume'], timeperiod=20).iloc[-1]
+
+        return {
+            "MACD": macd_status,
+            "RSI": rsi_val,
+            "EMA50": ema50_val,
+            "Stochastic_K": slowk_val,
+            "Stochastic_D": slowd_val,
+            "StochRSI": stochrsi_val,
+            "Volume": volume_val,
+            "Volume_MA20": volume_ma20
+        }
+
     except Exception as e:
         print(f"TA error for {ticker}: {e}")
         return None
@@ -95,10 +95,9 @@ def get_top_gainers_losers():
 def run_screener():
     screened = []
     for t in tickers_list:
-        ta = get_ta(t)
+        ta = get_ta_full(t)
         if ta:
-            macd_status, rsi_status, _, _, _, _ = ta
-            if "Golden Cross" in macd_status or "Oversold" in rsi_status:
+            if ta['MACD'] == 'Golden Cross ✅' or ta['RSI'] < 30 or ta['Stochastic_K'] < 20:
                 screened.append(t)
     return screened
 
@@ -151,10 +150,11 @@ def main():
                             ticker = parts[1].upper()
                             if not ticker.endswith(".JK"):
                                 ticker += ".JK"
-                            ta = get_ta(ticker)
+                            ta = get_ta_full(ticker)
                             if ta:
-                                macd_status, rsi_status, sma20, trend_sma, ema50, trend_ema = ta
-                                send_message(chat_id, f"{ticker} Technical Analysis:\nMACD: {macd_status}\nRSI: {rsi_status}\nSMA20: {sma20:.2f} {trend_sma}\nEMA50: {ema50:.2f} {trend_ema}")
+                                msg = f"{ticker} Technical Analysis:\n"
+                                msg += f"MACD: {ta['MACD']}\nRSI: {ta['RSI']:.2f}\nEMA50: {ta['EMA50']:.2f}\nStochastic K: {ta['Stochastic_K']:.2f}\nStochastic D: {ta['Stochastic_D']:.2f}\nStochRSI: {ta['StochRSI']:.2f}\nVolume: {ta['Volume']:.0f}\nVolume MA20: {ta['Volume_MA20']:.0f}"
+                                send_message(chat_id, msg)
                             else:
                                 send_message(chat_id, f"TA {ticker} tidak tersedia")
                         else:
@@ -162,7 +162,7 @@ def main():
                     elif "/screener" in text:
                         screened = run_screener()
                         if screened:
-                            msg = "🔍 Screener IDX (MACD Golden Cross / RSI Oversold):\n"
+                            msg = "🔍 Screener IDX (MACD Golden Cross / RSI Oversold / Stochastic < 20):\n"
                             msg += "\n".join(screened)
                         else:
                             msg = "Tidak ada saham memenuhi kriteria saat ini."
