@@ -7,24 +7,21 @@ from tradingview_ta import TA_Handler, Interval
 # ---------------- Config Telegram ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
-
-# Interval default dan update
-TA_INTERVAL = Interval.INTERVAL_1_HOUR
 UPDATE_INTERVAL = 600  # 10 menit
+TA_INTERVAL = Interval.INTERVAL_1_HOUR
+
+# Screener control
+screener_thread_running = False
+last_screener_results = {}
+default_delay = 2
+current_delay = default_delay
+
+# Filter khusus RSI > 50
+criteria = {"RSI": ">50"}
 
 # Cache TA
 ta_cache = {}
-cache_expiry = 600  # detik
-
-# Thread control
-screener_thread_running = False
-
-# Hasil screener terakhir
-last_screener_results = {}
-
-# Delay adaptif
-default_delay = 2
-current_delay = default_delay
+cache_expiry = 600
 
 # ---------------- Ambil ticker ----------------
 def load_idx_tickers_from_tv():
@@ -96,43 +93,43 @@ def get_tv_ta(symbol, retries=5):
             time.sleep(current_delay)
     return None, None
 
-# ---------------- Screener BUY-only ----------------
-def run_screener_buy_only(chat_id):
+# ---------------- Screener RSI > 50 ----------------
+def run_screener_rsi(chat_id):
     global last_screener_results
     batch_size = 10
-    any_buy = False
+    any_lolos = False
 
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
         for ticker in batch:
             indicators, summary = get_tv_ta(ticker)
-            if not summary:
+            if not indicators:
                 continue
 
-            recommendation = summary.get("RECOMMENDATION")
-            if recommendation == "BUY":
-                any_buy = True
-                if ticker not in last_screener_results or last_screener_results[ticker] != "BUY":
-                    msg = f"✅ {ticker} BUY!\nSummary: {recommendation}\nIndikator:\n"
-                    for k, v in indicators.items():
-                        msg += f"{k}: {v}\n"
+            val = indicators.get("RSI")
+            match = val is not None and val > 50
+
+            if match:
+                any_lolos = True
+                if ticker not in last_screener_results or last_screener_results[ticker] != "RSI>50":
+                    msg = f"✅ {ticker} RSI>50!\nRSI: {val}\nSummary: {summary.get('RECOMMENDATION')}"
                     send_message(chat_id, msg)
-                    last_screener_results[ticker] = "BUY"
+                    last_screener_results[ticker] = "RSI>50"
             else:
                 if ticker in last_screener_results:
-                    send_message(chat_id, f"❌ {ticker} keluar dari BUY")
+                    send_message(chat_id, f"❌ {ticker} keluar dari RSI>50")
                     del last_screener_results[ticker]
 
             time.sleep(0.5)
 
-    if not any_buy:
-        send_message(chat_id, "⚠️ Screener selesai, tidak ada ticker BUY saat ini.")
+    if not any_lolos:
+        send_message(chat_id, "⚠️ Screener selesai, tidak ada ticker RSI>50 saat ini.")
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
     global screener_thread_running
     while screener_thread_running:
-        run_screener_buy_only(chat_id)
+        run_screener_rsi(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
 # ---------------- Telegram Main Loop ----------------
@@ -169,7 +166,7 @@ def main():
                         if not screener_thread_running:
                             screener_thread_running = True
                             threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
-                            send_message(chat_id, f"✅ Screener BUY-only realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
+                            send_message(chat_id, f"✅ Screener RSI>50 realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
                         else:
                             send_message(chat_id, "Screener sudah berjalan.")
 
