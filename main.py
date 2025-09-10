@@ -4,7 +4,7 @@ import requests
 import pandas as pd
 from tradingview_ta import TA_Handler, Interval
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")  # set environment variable
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
 # Load IDX tickers
@@ -104,40 +104,59 @@ def run_screener(chat_id):
     screened = []
     for symbol in tickers_list:
         indicators, summary = get_tv_ta_dynamic(symbol, chat_id)
-        if not indicators or not summary:
+        if not indicators:
             continue
         match = True
-        macd_summary = summary.get("MACD")
-        if criteria.get("MACD") and macd_summary != criteria["MACD"].capitalize():
-            match = False
+
+        # MACD Golden Cross
+        macd = indicators.get("MACD.macd")
+        signal = indicators.get("MACD.signal")
+        if criteria.get("MACD") == "goldencross":
+            if macd is None or signal is None or macd <= signal:
+                match = False
+        elif criteria.get("MACD") == "deathcross":
+            if macd is None or signal is None or macd >= signal:
+                match = False
+
+        # RSI range
         rsi = indicators.get("RSI")
         if rsi is not None:
             if criteria.get("RSI_min") is not None and rsi < criteria["RSI_min"]:
                 match = False
             if criteria.get("RSI_max") is not None and rsi > criteria["RSI_max"]:
                 match = False
+
+        # Stochastic range
         stoch = indicators.get("Stoch.K")
         if stoch is not None:
             if criteria.get("STOCHASTIC_MIN") is not None and stoch < criteria["STOCHASTIC_MIN"]:
                 match = False
             if criteria.get("STOCHASTIC_MAX") is not None and stoch > criteria["STOCHASTIC_MAX"]:
                 match = False
+
+        # EMA50 range
         ema50 = indicators.get("EMA50")
         if ema50 is not None:
             if criteria.get("EMA50_MIN") is not None and ema50 < criteria["EMA50_MIN"]:
                 match = False
             if criteria.get("EMA50_MAX") is not None and ema50 > criteria["EMA50_MAX"]:
                 match = False
+
+        # Volume filter
         vol = indicators.get("Volume")
         if vol is not None:
             if criteria.get("VOLUME_MIN") is not None and vol < criteria["VOLUME_MIN"]:
                 match = False
             if criteria.get("VOLUME_MAX") is not None and vol > criteria["VOLUME_MAX"]:
                 match = False
+
+        # Summary filter
         if criteria.get("Summary") and summary.get("RECOMMENDATION") != criteria["Summary"]:
             match = False
+
         if match:
             screened.append(symbol)
+
     return screened
 
 # Help message
@@ -164,12 +183,12 @@ def main():
                 message = update.get("message")
                 if message:
                     chat_id = message["chat"]["id"]
-                    text = message.get("text","").lower()
-                    if "/start" in text:
+                    text = message.get("text","")
+                    if "/start" in text.lower():
                         send_message(chat_id, "Bot Data Saham IDX aktif.\nGunakan /help untuk panduan.")
-                    elif "/help" in text:
+                    elif "/help" in text.lower():
                         send_message(chat_id, help_message())
-                    elif text.startswith("/ta"):
+                    elif text.lower().startswith("/ta"):
                         parts = text.split()
                         if len(parts)==2:
                             symbol = parts[1].upper()
@@ -184,11 +203,11 @@ def main():
                                 send_message(chat_id,f"TA {symbol} tidak tersedia")
                         else:
                             send_message(chat_id,"Gunakan format: /ta <TICKER>")
-                    elif text.startswith("/setcriteria"):
+                    elif text.lower().startswith("/setcriteria"):
                         set_criteria(chat_id, text)
-                    elif text.startswith("/setinterval"):
+                    elif text.lower().startswith("/setinterval"):
                         set_interval(chat_id, text)
-                    elif "/screener" in text:
+                    elif "/screener" in text.lower():
                         screened = run_screener(chat_id)
                         if screened:
                             msg = "🔍 Screener IDX:\n" + "\n".join(screened)
