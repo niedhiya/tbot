@@ -1,15 +1,16 @@
+import time
 import os
 import requests
 import pandas as pd
 import yfinance as yf
+import talib
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
-# Load semua ticker IDX
 def load_idx_tickers(file_path="tickers_idx.xlsx"):
     df = pd.read_excel(file_path)
-    tickers = df['Code'].astype(str).tolist()  # kolom 'Code' sesuai XLSX IDX
+    tickers = df['Code'].astype(str).tolist()
     tickers = [t + ".JK" for t in tickers]
     return tickers, df.set_index('Code')
 
@@ -21,7 +22,6 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# Fungsi harga saham
 def get_price(ticker):
     try:
         data = yf.Ticker(ticker).history(period="1d")
@@ -31,11 +31,36 @@ def get_price(ticker):
         prev_close = data['Close'].iloc[-2] if len(data) > 1 else data['Open'].iloc[-1]
         change = ((last_price - prev_close) / prev_close) * 100
         return last_price, change
-    except Exception as e:
-        print(f"Error fetching {ticker}: {e}")
+    except:
         return None
 
-# Fungsi top gainers/losers
+def get_ta(ticker):
+    try:
+        df = yf.download(ticker, period="30d", interval="1d")
+        if df.empty or len(df) < 26:
+            return None
+        macd, signal, hist = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
+        macd_status = "Neutral"
+        if macd.iloc[-2] < signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1]:
+            macd_status = "Golden Cross ✅"
+        elif macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]:
+            macd_status = "Death Cross ❌"
+        rsi = talib.RSI(df['Close'], timeperiod=14)
+        rsi_val = rsi.iloc[-1]
+        if rsi_val > 70:
+            rsi_status = f"{rsi_val:.2f} (Overbought)"
+        elif rsi_val < 30:
+            rsi_status = f"{rsi_val:.2f} (Oversold)"
+        else:
+            rsi_status = f"{rsi_val:.2f} (Normal)"
+        sma20 = talib.SMA(df['Close'], timeperiod=20).iloc[-1]
+        ema50 = talib.EMA(df['Close'], timeperiod=50).iloc[-1]
+        trend_sma = "↑" if df['Close'].iloc[-1] > sma20 else "↓"
+        trend_ema = "↑" if df['Close'].iloc[-1] > ema50 else "↓"
+        return macd_status, rsi_status, sma20, trend_sma, ema50, trend_ema
+    except:
+        return None
+
 def get_top_gainers_losers():
     results = []
     for t in tickers_list:
@@ -48,7 +73,18 @@ def get_top_gainers_losers():
     top_losers = df.sort_values('Change', ascending=True).head(5)
     return top_gainers, top_losers
 
+def run_screener():
+    screened = []
+    for t in tickers_list:
+        ta = get_ta(t)
+        if ta:
+            macd_status, rsi_status, _, _, _, _ = ta
+            if "Golden Cross" in macd_status or "Oversold" in rsi_status:
+                screened.append(t)
+    return screened
+
 def main():
+    subscribers = set()
     offset = None
     print("Bot started...")
     while True:
@@ -60,7 +96,8 @@ def main():
                     chat_id = message["chat"]["id"]
                     text = message.get("text", "").lower()
                     if "/start" in text:
-                        send_message(chat_id, "Bot Data Saham IDX aktif.\nPerintah:\n/price <TICKER>\n/topgainers\n/toplosers")
+                        send_message(chat_id, "Bot Data Saham IDX aktif.\nPerintah:\n/price <TICKER>\n/topgainers\n/toplosers\n/ta <TICKER>\n/screener")
+                        subscribers.add(chat_id)
                     elif text.startswith("/price"):
                         parts = text.split()
                         if len(parts) == 2:
@@ -88,7 +125,32 @@ def main():
                         for i,row in top_losers.iterrows():
                             msg += f"{row['Ticker']}: {row['Price']:.2f} ({row['Change']:.2f}%)\n"
                         send_message(chat_id, msg)
-
+                    elif text.startswith("/ta"):
+                        parts = text.split()
+                        if len(parts) == 2:
+                            ticker = parts[1].upper()
+                            if not ticker.endswith(".JK"):
+                                ticker += ".JK"
+                            ta = get_ta(ticker)
+                            if ta:
+                                macd_status, rsi_status, sma20, trend_sma, ema50, trend_ema = ta
+                                send_message(chat_id, f"{ticker} Technical Analysis:\nMACD: {macd_status}\nRSI: {rsi_status}\nSMA20: {sma20:.2f} {trend_sma}\nEMA50: {ema50:.2f} {trend_ema}")
+                            else:
+                                send_message(chat_id, f"TA {ticker} tidak tersedia")
+                        else:
+                            send_message(chat_id, "Gunakan format: /ta <TICKER>")
+                    elif "/screener" in text:
+                        screened = run_screener()
+                        if screened:
+                            msg = "🔍 Screener IDX (MACD Golden Cross / RSI Oversold):\n"
+                            msg += "\n".join(screened)
+                        else:
+                            msg = "Tidak ada saham memenuhi kriteria saat ini."
+                        send_message(chat_id, msg)
                     offset = update["update_id"] + 1
         except Exception as e:
             print(f"Error: {e}")
+        time.sleep(5)
+
+if __name__ == "__main__":
+    main()
