@@ -1,32 +1,34 @@
-from flask import Flask, request
+import time
 import os
 import requests
 
-app = Flask(__name__)
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+URL = f"https://api.telegram.org/bot{TOKEN}"
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-
-@app.route('/')
-def index():
-    return "Bot is online."
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json()
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
-        send_message(chat_id, f"Echo: {text}")
-    return "OK"
+def get_updates(offset=None):
+    url = f"{URL}/getUpdates"
+    params = {"timeout": 100, "offset": offset}
+    response = requests.get(url, params=params)
+    return response.json()
 
 def send_message(chat_id, text):
-    url = f"{TELEGRAM_API}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text
-    }
+    url = f"{URL}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
     requests.post(url, json=payload)
 
+def main():
+    offset = None
+    while True:
+        updates = get_updates(offset)
+        if "result" in updates:
+            for update in updates["result"]:
+                message = update.get("message")
+                if message:
+                    chat_id = message["chat"]["id"]
+                    text = message.get("text", "")
+                    send_message(chat_id, f"Echo: {text}")
+                    offset = update["update_id"] + 1
+        time.sleep(1)
+
 if __name__ == '__main__':
-    app.run()
+    main()
