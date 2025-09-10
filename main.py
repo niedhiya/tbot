@@ -8,12 +8,12 @@ from tradingview_ta import get_multiple_analysis, Interval
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 UPDATE_INTERVAL = 600  # Screener refresh tiap 10 menit
-TA_INTERVAL = Interval.INTERVAL_1_HOUR  # Interval 1 jam
+TA_INTERVAL = Interval.INTERVAL_1_HOUR  # Interval default 1 jam
 
 screener_thread_running = False
 last_crossup_results = {}
-
-DELAY = 10  # 10 detik per batch
+prev_stochastic = {}  # simpan K/D sebelumnya per ticker
+DELAY = 5  # 10 detik per batch
 batch_size = 10
 
 # ---------------- Ambil ticker IDX ----------------
@@ -40,7 +40,7 @@ def send_message(chat_id, text):
 
 # ---------------- Screener Stochastic crossup ----------------
 def run_screener_stochastic_crossup(chat_id):
-    global last_crossup_results
+    global last_crossup_results, prev_stochastic
     any_crossup = False
 
     for i in range(0, len(tickers_list), batch_size):
@@ -60,24 +60,28 @@ def run_screener_stochastic_crossup(chat_id):
             ticker = symbol_full.replace("IDX:", "")
             indicators = data.indicators
 
-            stochastic_k = indicators.get("STOCH.K")
-            stochastic_d = indicators.get("STOCH.D")
+            current_K = indicators.get("STOCH.K")
+            current_D = indicators.get("STOCH.D")
 
-            if stochastic_k is None or stochastic_d is None:
+            if current_K is None or current_D is None:
                 continue
 
-            crossup = stochastic_k > stochastic_d
+            prev_K, prev_D = prev_stochastic.get(ticker, (None, None))
+            crossup = prev_K is not None and prev_D is not None and prev_K < prev_D and current_K > current_D
 
             if crossup:
                 any_crossup = True
                 if ticker not in last_crossup_results or not last_crossup_results[ticker]:
-                    msg = f"✅ {ticker} Stochastic K crossup D\nK: {stochastic_k}\nD: {stochastic_d}"
+                    msg = f"✅ {ticker} Stochastic K crossup D\nK: {current_K}\nD: {current_D}"
                     send_message(chat_id, msg)
                     last_crossup_results[ticker] = True
             else:
                 if ticker in last_crossup_results and last_crossup_results[ticker]:
                     send_message(chat_id, f"❌ {ticker} keluar dari Stochastic K crossup D")
                     last_crossup_results[ticker] = False
+
+            # update nilai K/D sebelumnya
+            prev_stochastic[ticker] = (current_K, current_D)
 
         time.sleep(DELAY)
 
