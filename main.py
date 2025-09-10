@@ -4,21 +4,21 @@ import time
 import pickle
 from bs4 import BeautifulSoup
 from tradingview_ta import TA_Handler
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
 # Cache TA
 TA_CACHE_FILE = "ta_cache.pkl"
-TA_CACHE_TTL = 300  # detik, cache 5 menit
+TA_CACHE_TTL = 300  # 5 menit
 try:
     with open(TA_CACHE_FILE, "rb") as f:
         ta_cache = pickle.load(f)
 except:
     ta_cache = {}
 
-# Ambil ticker dari TradingView
+# Ambil ticker dari TradingView Indonesia
 TRADINGVIEW_URL = "https://id.tradingview.com/markets/stocks-indonesia/market-movers-all-stocks/"
 def get_tickers():
     try:
@@ -41,19 +41,19 @@ user_criteria = {}
 user_interval = {}
 default_interval = "1d"
 default_criteria = {
-    "MACD": None,
-    "RSI_min": None,
-    "RSI_max": None,
-    "STOCHASTIC_min": None,
-    "STOCHASTIC_max": None,
-    "EMA50_min": None,
-    "EMA50_max": None,
-    "VOLUME_min": None,
-    "VOLUME_max": None,
-    "Summary": None
+    "MACD": "",
+    "RSI_min": "",
+    "RSI_max": "",
+    "STOCHASTIC_min": "",
+    "STOCHASTIC_max": "",
+    "EMA50_min": "",
+    "EMA50_max": "",
+    "VOLUME_min": "",
+    "VOLUME_max": "",
+    "Summary": ""
 }
 
-# Kirim pesan Telegram
+# Kirim pesan ke Telegram
 def send_message(chat_id, text):
     requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
 
@@ -89,38 +89,52 @@ def run_screener(chat_id):
         indicators = data["indicators"]
         summary = data["summary"]
         match = True
+
+        # MACD
         macd = indicators.get("MACD.macd")
         signal = indicators.get("MACD.signal")
-        if criteria.get("MACD")=="goldencross" and (macd is None or signal is None or macd<=signal):
-            match=False
-        elif criteria.get("MACD")=="deathcross" and (macd is None or signal is None or macd>=signal):
-            match=False
+        if criteria.get("MACD"):
+            if criteria["MACD"].lower() == "goldencross" and (macd is None or signal is None or macd <= signal):
+                match = False
+            elif criteria["MACD"].lower() == "deathcross" and (macd is None or signal is None or macd >= signal):
+                match = False
+
+        # RSI
         rsi = indicators.get("RSI")
         if rsi is not None:
-            if criteria.get("RSI_min") is not None and rsi<criteria["RSI_min"]:
-                match=False
-            if criteria.get("RSI_max") is not None and rsi>criteria["RSI_max"]:
-                match=False
+            if criteria.get("RSI_min") != "" and rsi < float(criteria["RSI_min"]):
+                match = False
+            if criteria.get("RSI_max") != "" and rsi > float(criteria["RSI_max"]):
+                match = False
+
+        # Stochastic
         stoch = indicators.get("Stoch.K")
         if stoch is not None:
-            if criteria.get("STOCHASTIC_min") is not None and stoch<criteria["STOCHASTIC_min"]:
-                match=False
-            if criteria.get("STOCHASTIC_max") is not None and stoch>criteria["STOCHASTIC_max"]:
-                match=False
+            if criteria.get("STOCHASTIC_min") != "" and stoch < float(criteria["STOCHASTIC_min"]):
+                match = False
+            if criteria.get("STOCHASTIC_max") != "" and stoch > float(criteria["STOCHASTIC_max"]):
+                match = False
+
+        # EMA50
         ema50 = indicators.get("EMA50")
         if ema50 is not None:
-            if criteria.get("EMA50_min") is not None and ema50<criteria["EMA50_min"]:
-                match=False
-            if criteria.get("EMA50_max") is not None and ema50>criteria["EMA50_max"]:
-                match=False
+            if criteria.get("EMA50_min") != "" and ema50 < float(criteria["EMA50_min"]):
+                match = False
+            if criteria.get("EMA50_max") != "" and ema50 > float(criteria["EMA50_max"]):
+                match = False
+
+        # Volume
         vol = indicators.get("Volume")
         if vol is not None:
-            if criteria.get("VOLUME_min") is not None and vol<criteria["VOLUME_min"]:
-                match=False
-            if criteria.get("VOLUME_max") is not None and vol>criteria["VOLUME_max"]:
-                match=False
-        if criteria.get("Summary") and summary.get("RECOMMENDATION")!=criteria["Summary"]:
-            match=False
+            if criteria.get("VOLUME_min") != "" and vol < float(criteria["VOLUME_min"]):
+                match = False
+            if criteria.get("VOLUME_max") != "" and vol > float(criteria["VOLUME_max"]):
+                match = False
+
+        # Summary
+        if criteria.get("Summary") != "" and summary.get("RECOMMENDATION") != criteria["Summary"]:
+            match = False
+
         if match:
             return symbol
         return None
@@ -133,54 +147,50 @@ def run_screener(chat_id):
                 results.append(res)
     return results
 
-# Handle /setcriteria
+# /setcriteria
 def set_criteria(chat_id, text):
     criteria = default_criteria.copy()
     parts = text.replace("/setcriteria","").strip().split()
     for p in parts:
         if "=" in p:
             key,val = p.split("=")
-            key=key.upper()
+            key = key.upper()
             if key in criteria:
-                criteria[key]=val
+                criteria[key] = val
         elif ">" in p:
-            key,val=p.split(">")
-            key=key.upper()+"_min"
-            try: criteria[key]=float(val)
-            except: criteria[key]=val
+            key,val = p.split(">")
+            key = key.upper()+"_min"
+            criteria[key] = val
         elif "<" in p:
-            key,val=p.split("<")
-            key=key.upper()+"_max"
-            try: criteria[key]=float(val)
-            except: criteria[key]=val
-    user_criteria[chat_id]=criteria
-    send_message(chat_id,f"Kriteria tersimpan:\n{criteria}")
+            key,val = p.split("<")
+            key = key.upper()+"_max"
+            criteria[key] = val
+    user_criteria[chat_id] = criteria
+    send_message(chat_id, f"Kriteria tersimpan:\n{criteria}")
 
-# Handle /setinterval
-def set_interval(chat_id,text):
-    parts=text.split()
-    if len(parts)==2:
-        allowed=["1m","5m","15m","1h","1d"]
-        if parts[1] in allowed:
-            user_interval[chat_id]=parts[1]
-            send_message(chat_id,f"Interval diset ke {parts[1]}")
-        else:
-            send_message(chat_id,"Interval tidak valid: 1m,5m,15m,1h,1d")
+# /setinterval
+def set_interval(chat_id, text):
+    parts = text.split()
+    if len(parts)==2 and parts[1] in ["1m","5m","15m","1h","1d"]:
+        user_interval[chat_id] = parts[1]
+        send_message(chat_id, f"Interval diset ke {parts[1]}")
+    else:
+        send_message(chat_id,"Gunakan interval: 1m,5m,15m,1h,1d")
 
-# Handle /ta <ticker>
-def get_ta(chat_id,ticker):
-    interval = user_interval.get(chat_id,default_interval)
-    data = fetch_ta(ticker,interval)
+# /ta <ticker>
+def get_ta(chat_id, ticker):
+    interval = user_interval.get(chat_id, default_interval)
+    data = fetch_ta(ticker, interval)
     if not data:
-        send_message(chat_id,f"TA {ticker} tidak tersedia")
+        send_message(chat_id, f"TA {ticker} tidak tersedia")
         return
-    msg=f"{ticker} TA:\n"
+    msg = f"{ticker} TA:\n"
     for k,v in data["indicators"].items():
-        msg+=f"{k}: {v}\n"
-    msg+=f"Summary: {data['summary'].get('RECOMMENDATION','N/A')}"
-    send_message(chat_id,msg)
+        msg += f"{k}: {v}\n"
+    msg += f"Summary: {data['summary'].get('RECOMMENDATION','N/A')}"
+    send_message(chat_id, msg)
 
-# Help
+# /help
 def help_message():
     return ("/start - Mulai bot\n"
             "/help - Panduan\n"
@@ -189,38 +199,38 @@ def help_message():
             "/setinterval - Set interval TA\n"
             "/screener - Jalankan screener saham")
 
-# Main bot loop
+# Main loop
 def main():
-    offset=None
+    offset = None
     while True:
         try:
-            updates=requests.get(f"{URL}/getUpdates",params={"offset":offset,"timeout":100}).json()
+            updates = requests.get(f"{URL}/getUpdates", params={"offset":offset,"timeout":100}).json()
             for update in updates.get("result",[]):
-                msg=update.get("message")
+                msg = update.get("message")
                 if not msg: continue
-                chat_id=msg["chat"]["id"]
-                text=msg.get("text","").lower()
+                chat_id = msg["chat"]["id"]
+                text = msg.get("text","").lower()
                 if "/start" in text:
                     send_message(chat_id,"Bot aktif. Gunakan /help untuk panduan.")
                 elif "/help" in text:
-                    send_message(chat_id,help_message())
+                    send_message(chat_id, help_message())
                 elif text.startswith("/ta"):
-                    parts=text.split()
+                    parts = text.split()
                     if len(parts)==2:
-                        get_ta(chat_id,parts[1].upper())
+                        get_ta(chat_id, parts[1].upper())
                 elif text.startswith("/setcriteria"):
-                    set_criteria(chat_id,text)
+                    set_criteria(chat_id, text)
                 elif text.startswith("/setinterval"):
-                    set_interval(chat_id,text)
+                    set_interval(chat_id, text)
                 elif "/screener" in text:
-                    res=run_screener(chat_id)
+                    res = run_screener(chat_id)
                     if res:
-                        send_message(chat_id,"Screener saham:\n"+"\n".join(res))
+                        send_message(chat_id,"Screener saham:\n" + "\n".join(res))
                     else:
                         send_message(chat_id,"Tidak ada saham lolos kriteria saat ini.")
-                offset=update["update_id"]+1
+                offset = update["update_id"]+1
         except Exception as e:
-            print("Error:",e)
+            print("Error:", e)
         time.sleep(5)
 
 if __name__=="__main__":
