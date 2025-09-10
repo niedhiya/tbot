@@ -13,8 +13,9 @@ TA_INTERVAL = Interval.INTERVAL_1_HOUR  # Interval default 1 jam
 screener_thread_running = False
 last_crossup_results = {}
 prev_stochastic = {}  # simpan K/D sebelumnya per ticker
-DELAY = 5  # 10 detik per batch
-batch_size = 10
+ta_cache = {}  # cache sementara
+DELAY = 10
+batch_size = 5  # batch lebih kecil supaya lebih aman
 
 # ---------------- Ambil ticker IDX ----------------
 def load_idx_tickers_from_tv():
@@ -40,20 +41,28 @@ def send_message(chat_id, text):
 
 # ---------------- Screener Stochastic crossup ----------------
 def run_screener_stochastic_crossup(chat_id):
-    global last_crossup_results, prev_stochastic
+    global last_crossup_results, prev_stochastic, ta_cache
     any_crossup = False
 
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
-        try:
-            analyses = get_multiple_analysis(
-                screener="indonesia",
-                interval=TA_INTERVAL,
-                symbols=[f"IDX:{t}" for t in batch]
-            )
-        except Exception as e:
-            print(f"Batch error: {e}")
-            time.sleep(DELAY)
+        if not batch:
+            continue
+
+        # Retry 3x jika gagal
+        for attempt in range(3):
+            try:
+                analyses = get_multiple_analysis(
+                    screener="indonesia",
+                    interval=TA_INTERVAL,
+                    symbols=[f"IDX:{t}" for t in batch]
+                )
+                break  # sukses
+            except Exception as e:
+                print(f"Batch error attempt {attempt+1}: {e}")
+                time.sleep(5)
+        else:
+            print(f"Batch gagal setelah 3 kali percobaan: {batch}")
             continue
 
         for symbol_full, data in analyses.items():
@@ -80,7 +89,8 @@ def run_screener_stochastic_crossup(chat_id):
                     send_message(chat_id, f"❌ {ticker} keluar dari Stochastic K crossup D")
                     last_crossup_results[ticker] = False
 
-            # update nilai K/D sebelumnya
+            # update cache dan prev K/D
+            ta_cache[ticker] = (current_K, current_D)
             prev_stochastic[ticker] = (current_K, current_D)
 
         time.sleep(DELAY)
