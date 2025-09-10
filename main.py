@@ -14,13 +14,13 @@ UPDATE_INTERVAL = 300  # 5 menit
 
 # Cache TA
 ta_cache = {}  # {ticker: {"indicators":..., "summary":..., "timestamp":...}}
+cache_expiry = 300  # detik, sesuai UPDATE_INTERVAL
 
 # User-defined filter criteria
 criteria = {}  # Tidak ada default, user harus set via /set_criteria
 
 # Thread control
 screener_thread_running = False
-screener_thread_obj = None
 
 # ---------------- Ambil ticker dari TradingView ----------------
 def load_idx_tickers_from_tv():
@@ -56,7 +56,6 @@ def send_message(chat_id, text):
         send_error(f"Error sending message: {e}")
 
 def send_error(text):
-    # Kirim error ke admin / chat
     admin_chat_id = os.environ.get("ADMIN_CHAT_ID")
     if admin_chat_id:
         try:
@@ -69,12 +68,22 @@ def send_error(text):
 def get_tv_ta(symbol, retries=3):
     for i in range(retries):
         try:
+            # Gunakan cache jika belum expired
+            cached = ta_cache.get(symbol)
+            if cached and time.time() - cached['timestamp'] < cache_expiry:
+                return cached['indicators'], cached['summary']
+
             handler = TA_Handler(symbol=symbol, screener="indonesia", exchange="IDX", interval=TA_INTERVAL)
             analysis = handler.get_analysis()
+            ta_cache[symbol] = {
+                "indicators": analysis.indicators,
+                "summary": analysis.summary,
+                "timestamp": time.time()
+            }
             return analysis.indicators, analysis.summary
         except Exception as e:
             send_error(f"{symbol} attempt {i+1} failed: {e}")
-            time.sleep(1)
+            time.sleep(2)  # delay lebih panjang untuk menghindari 429
     return None, None
 
 # ---------------- Screener ----------------
@@ -84,37 +93,37 @@ def run_screener(chat_id):
         return
 
     results = []
-    for ticker in tickers_list:
-        indicators, summary = get_tv_ta(ticker)
-        if not indicators:
-            continue
+    batch_size = 10  # batch per 50 ticker
+    for i in range(0, len(tickers_list), batch_size):
+        batch = tickers_list[i:i+batch_size]
+        for ticker in batch:
+            indicators, summary = get_tv_ta(ticker)
+            if not indicators:
+                continue
 
-        # Simpan cache
-        ta_cache[ticker] = {"indicators": indicators, "summary": summary, "timestamp": time.time()}
-
-        # Filter berdasarkan user-defined criteria
-        match = True
-        for key, condition in criteria.items():
-            val = indicators.get(key)
-            if val is None:
-                match = False
-                break
-            if isinstance(condition, str):
-                if condition.startswith("<") and val >= float(condition[1:]):
+            # Filter berdasarkan user-defined criteria
+            match = True
+            for key, condition in criteria.items():
+                val = indicators.get(key)
+                if val is None:
                     match = False
                     break
-                elif condition.startswith(">") and val <= float(condition[1:]):
-                    match = False
-                    break
-                elif condition == "cross_up" and summary.get('RECOMMENDATION') != "BUY":
-                    match = False
-                    break
-                elif condition == "cross_down" and summary.get('RECOMMENDATION') != "SELL":
-                    match = False
-                    break
-        if match:
-            results.append((ticker, summary.get('RECOMMENDATION')))
-        time.sleep(1)
+                if isinstance(condition, str):
+                    if condition.startswith("<") and val >= float(condition[1:]):
+                        match = False
+                        break
+                    elif condition.startswith(">") and val <= float(condition[1:]):
+                        match = False
+                        break
+                    elif condition == "cross_up" and summary.get('RECOMMENDATION') != "BUY":
+                        match = False
+                        break
+                    elif condition == "cross_down" and summary.get('RECOMMENDATION') != "SELL":
+                        match = False
+                        break
+            if match:
+                results.append((ticker, summary.get('RECOMMENDATION')))
+            time.sleep(2)  # delay antar ticker
 
     # Kirim hasil screener
     if results:
@@ -134,7 +143,7 @@ def screener_thread(chat_id):
 
 # ---------------- Telegram Main Loop ----------------
 def main():
-    global TA_INTERVAL, criteria, screener_thread_running, screener_thread_obj
+    global TA_INTERVAL, criteria, screener_thread_running
     offset = None
     while True:
         try:
@@ -165,8 +174,7 @@ def main():
                     elif text.startswith("/screener_start"):
                         if not screener_thread_running:
                             screener_thread_running = True
-                            screener_thread_obj = threading.Thread(target=screener_thread, args=(chat_id,), daemon=True)
-                            screener_thread_obj.start()
+                            threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
                             send_message(chat_id, f"✅ Screener realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
                         else:
                             send_message(chat_id, "Screener sudah berjalan.")
