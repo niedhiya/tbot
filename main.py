@@ -1,21 +1,11 @@
-import requests
-from bs4 import BeautifulSoup
+import pandas as pd
 from tradingview_ta import TA_Handler
 from concurrent.futures import ThreadPoolExecutor
 
-# Ambil ticker IDX dari TradingView
-TRADINGVIEW_URL = "https://id.tradingview.com/markets/stocks-indonesia/market-movers-all-stocks/"
-def get_tickers():
-    response = requests.get(TRADINGVIEW_URL)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    tickers = []
-    for a in soup.find_all('a', {'class':'tv-widget-symbol__link'}):
-        ticker = a.get_text(strip=True)
-        if ticker:
-            tickers.append(f"{ticker}.JK")
-    return tickers
+# Load ticker IDX dari CSV
+df = pd.read_csv("tickers_idx.csv")  # pastikan kolom ada 'KodeEmiten'
+tickers_list = [f"{row}.JK" for row in df['KodeEmiten']]
 
-tickers_list = get_tickers()
 print(f"Total tickers: {len(tickers_list)}")
 
 # Fetch TA function
@@ -28,14 +18,13 @@ def fetch_ta(symbol, interval="1d"):
         print(f"Error fetching {symbol}: {e}")
         return None
 
-# Screener testing: tampilkan semua saham TA tersedia
+# Screener testing: tampilkan semua saham dengan summary TA
 def run_screener_test():
     results = []
 
     def check_ticker(symbol):
         data = fetch_ta(symbol)
         if data:
-            # Menampilkan semua TA tanpa filter
             rec = data["summary"].get("RECOMMENDATION", "N/A")
             return f"{symbol}: {rec}"
         return None
