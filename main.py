@@ -3,8 +3,9 @@ import os
 import requests
 import pandas as pd
 from tradingview_ta import TA_Handler
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")  # set environment variable
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
 # Load IDX tickers
@@ -15,11 +16,10 @@ def load_idx_tickers(file_path="tickers_idx.xlsx"):
 
 tickers_list = load_idx_tickers()
 
-# User-specific settings
 user_criteria = {}
 user_interval = {}
+default_interval = "1d"
 
-# Default settings
 default_criteria = {
     "MACD": None,
     "RSI_min": None,
@@ -33,18 +33,14 @@ default_criteria = {
     "Summary": None
 }
 
-default_interval = "1d"
-
-# Telegram helper
 def send_message(chat_id, text):
     try:
         requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# TradingView TA per user interval
-def get_tv_ta_dynamic(symbol, chat_id):
-    interval = user_interval.get(chat_id, default_interval)
+# Fetch TA untuk satu ticker
+def fetch_ta(symbol, interval):
     try:
         handler = TA_Handler(
             symbol=symbol,
@@ -53,12 +49,23 @@ def get_tv_ta_dynamic(symbol, chat_id):
             interval=interval
         )
         analysis = handler.get_analysis()
-        return analysis.indicators, analysis.summary
+        return symbol, {"indicators": analysis.indicators, "summary": analysis.summary}
     except Exception as e:
-        print(f"TradingView TA error for {symbol}: {e}")
-        return None, None
+        print(f"TA error {symbol}: {e}")
+        return symbol, None
 
-# Set criteria command
+# Fetch TA semua ticker paralel
+def fetch_all_ta_parallel(interval):
+    all_ta = {}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_ta, symbol, interval): symbol for symbol in tickers_list}
+        for future in as_completed(futures):
+            symbol, data = future.result()
+            if data:
+                all_ta[symbol] = data
+    return all_ta
+
+# Set criteria
 def set_criteria(chat_id, text):
     criteria = default_criteria.copy()
     parts = text.replace("/setcriteria","").strip().split()
@@ -85,17 +92,11 @@ def set_criteria(chat_id, text):
     user_criteria[chat_id] = criteria
     send_message(chat_id, f"Kriteria screener berhasil disimpan:\n{criteria}")
 
-# Set interval command
+# Set interval
 def set_interval(chat_id, text):
     parts = text.split()
     if len(parts) == 2:
-        interval_map = {
-            "1m": "1m",
-            "5m": "5m",
-            "15m": "15m",
-            "1h": "1h",
-            "1d": "1d"
-        }
+        interval_map = {"1m":"1m","5m":"5m","15m":"15m","1h":"1h","1d":"1d"}
         interval_str = parts[1].lower()
         if interval_str in interval_map:
             user_interval[chat_id] = interval_map[interval_str]
@@ -106,24 +107,23 @@ def set_interval(chat_id, text):
 # Screener
 def run_screener(chat_id):
     criteria = user_criteria.get(chat_id, default_criteria)
+    interval = user_interval.get(chat_id, default_interval)
+    # Ambil semua TA paralel
+    all_ta = fetch_all_ta_parallel(interval)
     screened = []
-    for symbol in tickers_list:
-        indicators, summary = get_tv_ta_dynamic(symbol, chat_id)
-        if not indicators:
-            continue
+
+    for symbol, data in all_ta.items():
+        indicators = data["indicators"]
+        summary = data["summary"]
         match = True
 
-        # MACD Golden/Death Cross
         macd = indicators.get("MACD.macd")
         signal = indicators.get("MACD.signal")
-        if criteria.get("MACD") == "goldencross":
-            if macd is None or signal is None or macd <= signal:
-                match = False
-        elif criteria.get("MACD") == "deathcross":
-            if macd is None or signal is None or macd >= signal:
-                match = False
+        if criteria.get("MACD") == "goldencross" and (macd is None or signal is None or macd <= signal):
+            match = False
+        elif criteria.get("MACD") == "deathcross" and (macd is None or signal is None or macd >= signal):
+            match = False
 
-        # RSI
         rsi = indicators.get("RSI")
         if rsi is not None:
             if criteria.get("RSI_min") is not None and rsi < criteria["RSI_min"]:
@@ -131,7 +131,6 @@ def run_screener(chat_id):
             if criteria.get("RSI_max") is not None and rsi > criteria["RSI_max"]:
                 match = False
 
-        # Stochastic
         stoch = indicators.get("Stoch.K")
         if stoch is not None:
             if criteria.get("STOCHASTIC_min") is not None and stoch < criteria["STOCHASTIC_min"]:
@@ -139,7 +138,6 @@ def run_screener(chat_id):
             if criteria.get("STOCHASTIC_max") is not None and stoch > criteria["STOCHASTIC_max"]:
                 match = False
 
-        # EMA50
         ema50 = indicators.get("EMA50")
         if ema50 is not None:
             if criteria.get("EMA50_min") is not None and ema50 < criteria["EMA50_min"]:
@@ -147,7 +145,6 @@ def run_screener(chat_id):
             if criteria.get("EMA50_max") is not None and ema50 > criteria["EMA50_max"]:
                 match = False
 
-        # Volume
         vol = indicators.get("Volume")
         if vol is not None:
             if criteria.get("VOLUME_min") is not None and vol < criteria["VOLUME_min"]:
@@ -155,24 +152,22 @@ def run_screener(chat_id):
             if criteria.get("VOLUME_max") is not None and vol > criteria["VOLUME_max"]:
                 match = False
 
-        # Summary
         if criteria.get("Summary") and summary.get("RECOMMENDATION") != criteria["Summary"]:
             match = False
 
         if match:
             screened.append(symbol)
-
     return screened
 
-# Help message
+# Help
 def help_message():
     msg = (
         "📌 *Bot Data Saham IDX*\n\n"
         "/start - Mulai bot\n"
-        "/help - Menampilkan panduan\n"
+        "/help - Panduan\n"
         "/ta <TICKER> - Tampilkan TA TradingView\n"
-        "/setcriteria macd=goldencross rsi>60 rsi<90 ema50>5000 volume>1000000 summary=BUY - Set kriteria screener\n"
-        "/setinterval 1m|5m|15m|1h|1d - Set interval TA & screener\n"
+        "/setcriteria macd=goldencross rsi>60 rsi<90 ema50>5000 volume>1000000 summary=BUY - Set kriteria\n"
+        "/setinterval 1m|5m|15m|1h|1d - Set interval TA\n"
         "/screener - Menampilkan semua saham yang memenuhi kriteria"
     )
     return msg
@@ -197,7 +192,7 @@ def main():
                         parts = text.split()
                         if len(parts)==2:
                             symbol = parts[1].upper()
-                            indicators, summary = get_tv_ta_dynamic(symbol, chat_id)
+                            indicators, summary = fetch_ta(symbol, user_interval.get(chat_id, default_interval))
                             if indicators:
                                 msg = f"{symbol} Technical Analysis:\n"
                                 for k,v in indicators.items():
