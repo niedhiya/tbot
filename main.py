@@ -14,7 +14,7 @@ screener_thread_running = False
 last_crossup_results = {}
 
 # Delay antar request
-default_delay = 20
+default_delay = 10   # 10 detik per batch
 current_delay = default_delay
 
 ta_cache = {}
@@ -71,8 +71,8 @@ def get_tv_ta(symbol, retries=5):
             time.sleep(current_delay)
     return None
 
-# ---------------- Screener EMA5 crossup EMA20 + volume ----------------
-def run_screener_ema_crossup_volume(chat_id):
+# ---------------- Screener EMA5 crossup EMA20 ----------------
+def run_screener_ema_crossup(chat_id):
     global last_crossup_results
     batch_size = 10
     any_crossup = False
@@ -86,35 +86,32 @@ def run_screener_ema_crossup_volume(chat_id):
 
             ema5 = indicators.get("EMA5")
             ema20 = indicators.get("EMA20")
-            vol = indicators.get("volume")
-            vol_ma20 = indicators.get("volumeMA20")
-
-            if None in [ema5, ema20, vol, vol_ma20]:
+            if ema5 is None or ema20 is None:
                 continue
 
-            crossup = ema5 > ema20 and vol >= vol_ma20
+            crossup = ema5 > ema20
 
             if crossup:
                 any_crossup = True
                 if ticker not in last_crossup_results or not last_crossup_results[ticker]:
-                    msg = f"✅ {ticker} EMA5 crossup EMA20 + Volume OK\nEMA5: {ema5}\nEMA20: {ema20}\nVol: {vol}\nVolMA20: {vol_ma20}"
+                    msg = f"✅ {ticker} EMA5 crossup EMA20\nEMA5: {ema5}\nEMA20: {ema20}"
                     send_message(chat_id, msg)
                     last_crossup_results[ticker] = True
             else:
                 if ticker in last_crossup_results and last_crossup_results[ticker]:
-                    send_message(chat_id, f"❌ {ticker} keluar dari EMA5 crossup EMA20 / Volume tidak memenuhi")
+                    send_message(chat_id, f"❌ {ticker} keluar dari EMA5 crossup EMA20")
                     last_crossup_results[ticker] = False
 
             time.sleep(0.5)
 
     if not any_crossup:
-        send_message(chat_id, "⚠️ Screener selesai, tidak ada EMA5 crossup EMA20 dengan volume >= MA20 saat ini.")
+        send_message(chat_id, "⚠️ Screener selesai, tidak ada EMA5 crossup EMA20 saat ini.")
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
     global screener_thread_running
     while screener_thread_running:
-        run_screener_ema_crossup_volume(chat_id)
+        run_screener_ema_crossup(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
 # ---------------- Telegram Main Loop ----------------
@@ -131,13 +128,13 @@ def main():
                     text = message.get("text", "").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot EMA5 crossup EMA20 + Volume aktif.\nPerintah:\n/screener_start\n/screener_stop\n/set_interval")
+                        send_message(chat_id, "Bot EMA5 crossup EMA20 aktif.\nPerintah:\n/screener_start\n/screener_stop\n/set_interval")
 
                     elif text.startswith("/screener_start"):
                         if not screener_thread_running:
                             screener_thread_running = True
                             threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
-                            send_message(chat_id, "✅ Screener EMA5 crossup EMA20 + Volume realtime dimulai (refresh tiap 10 menit)")
+                            send_message(chat_id, "✅ Screener EMA5 crossup EMA20 realtime dimulai (refresh tiap 10 menit)")
                         else:
                             send_message(chat_id, "Screener sudah berjalan.")
 
