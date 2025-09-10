@@ -8,10 +8,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
-# Load IDX tickers
+# Load IDX tickers dari Excel (harus berupa ticker TradingView, BBCA, BREN, TLKM, dsb)
 def load_idx_tickers(file_path="tickers_idx.xlsx"):
     df = pd.read_excel(file_path)
-    # Ambil kolom 'Code' dan hapus spasi
     tickers = df['Code'].astype(str).str.strip().tolist()
     return tickers
 
@@ -21,7 +20,18 @@ user_criteria = {}
 user_interval = {}
 default_interval = "1d"
 
-default_criteria = {}
+default_criteria = {
+    "MACD": None,
+    "RSI_min": None,
+    "RSI_max": None,
+    "STOCHASTIC_min": None,
+    "STOCHASTIC_max": None,
+    "EMA50_min": None,
+    "EMA50_max": None,
+    "VOLUME_min": None,
+    "VOLUME_max": None,
+    "Summary": None
+}
 
 def send_message(chat_id, text):
     try:
@@ -29,9 +39,9 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# Fetch TA satu ticker, format TradingView IDX:NAMAEMITEN
+# Fetch TA satu ticker (format IDX:SYMBOL)
 def fetch_ta(symbol, interval):
-    tv_symbol = f"IDX:{symbol.replace('.JK','')}"  # ubah BBCA.JK → IDX:BBCA
+    tv_symbol = f"IDX:{symbol.strip()}"
     try:
         handler = TA_Handler(
             symbol=tv_symbol,
@@ -42,7 +52,7 @@ def fetch_ta(symbol, interval):
         analysis = handler.get_analysis()
         return {"indicators": analysis.indicators, "summary": analysis.summary}
     except Exception as e:
-        print(f"TA error {symbol}: {e}")
+        print(f"TA error {tv_symbol}: {e}")
         return None
 
 # Fetch TA semua ticker paralel
@@ -57,7 +67,7 @@ def fetch_all_ta_parallel(interval):
                 all_ta[symbol] = data
     return all_ta
 
-# Set criteria
+# Set kriteria screener
 def set_criteria(chat_id, text):
     criteria = default_criteria.copy()
     parts = text.replace("/setcriteria","").strip().split()
@@ -84,7 +94,7 @@ def set_criteria(chat_id, text):
     user_criteria[chat_id] = criteria
     send_message(chat_id, f"Kriteria screener berhasil disimpan:\n{criteria}")
 
-# Set interval
+# Set interval TA
 def set_interval(chat_id, text):
     parts = text.split()
     if len(parts) == 2:
@@ -158,7 +168,7 @@ def help_message():
         "📌 *Bot Data Saham IDX*\n\n"
         "/start - Mulai bot\n"
         "/help - Panduan\n"
-        "/ta <TICKER> - Tampilkan TA TradingView (IDX:NAMAEMITEN)\n"
+        "/ta <TICKER> - Tampilkan TA TradingView (contoh: /ta BREN)\n"
         "/setcriteria macd=goldencross rsi>60 rsi<90 ema50>5000 volume>1000000 summary=BUY - Set kriteria\n"
         "/setinterval 1m|5m|15m|1h|1d - Set interval TA\n"
         "/screener - Menampilkan semua saham yang memenuhi kriteria"
