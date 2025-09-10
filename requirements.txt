@@ -4,4 +4,3 @@ pandas
 TA-Lib
 openpyxl
 tradingview_ta
-tvDatafeed
