@@ -10,17 +10,20 @@ URL = f"https://api.telegram.org/bot{TOKEN}"
 
 # Interval default dan update
 TA_INTERVAL = Interval.INTERVAL_1_MINUTE
-UPDATE_INTERVAL = 300  # 5 menit
+UPDATE_INTERVAL = 600  # 10 menit
 
 # Cache TA
 ta_cache = {}  # {ticker: {"indicators":..., "summary":..., "timestamp":...}}
-cache_expiry = 300  # detik, sesuai UPDATE_INTERVAL
+cache_expiry = 600  # detik
 
 # User-defined filter criteria
-criteria = {}  # Tidak ada default, user harus set via /set_criteria
+criteria = {}  # user harus set via /set_criteria
 
 # Thread control
 screener_thread_running = False
+
+# Hasil screener terakhir
+last_screener_results = {}
 
 # ---------------- Ambil ticker dari TradingView ----------------
 def load_idx_tickers_from_tv():
@@ -83,17 +86,20 @@ def get_tv_ta(symbol, retries=3):
             return analysis.indicators, analysis.summary
         except Exception as e:
             send_error(f"{symbol} attempt {i+1} failed: {e}")
-            time.sleep(2)  # delay lebih panjang untuk menghindari 429
+            time.sleep(2)  # delay lebih panjang
     return None, None
 
 # ---------------- Screener ----------------
 def run_screener(chat_id):
+    global last_screener_results
+
     if not criteria:
         send_message(chat_id, "❌ Silakan set kriteria screener terlebih dahulu menggunakan /set_criteria")
         return
 
-    results = []
-    batch_size = 10  # batch per 50 ticker
+    current_results = {}
+    batch_size = 10  # batch 10 ticker
+
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
         for ticker in batch:
@@ -101,7 +107,7 @@ def run_screener(chat_id):
             if not indicators:
                 continue
 
-            # Filter berdasarkan user-defined criteria
+            # Filter user-defined criteria
             match = True
             for key, condition in criteria.items():
                 val = indicators.get(key)
@@ -121,18 +127,34 @@ def run_screener(chat_id):
                     elif condition == "cross_down" and summary.get('RECOMMENDATION') != "SELL":
                         match = False
                         break
+
             if match:
-                results.append((ticker, summary.get('RECOMMENDATION')))
+                current_results[ticker] = summary.get('RECOMMENDATION')
             time.sleep(2)  # delay antar ticker
 
-    # Kirim hasil screener
-    if results:
-        msg = f"🔍 Screener IDX (Interval: {TA_INTERVAL}):\n"
-        for t, s in results:
-            msg += f"{t} → {s}\n"
-        send_message(chat_id, msg)
-    else:
-        send_message(chat_id, "❌ Tidak ada ticker yang lolos kriteria.")
+    # Bandingkan dengan hasil terakhir
+    # 1. Ticker baru lolos atau berubah rekomendasi
+    for ticker, rec in current_results.items():
+        if ticker not in last_screener_results:
+            msg = f"✅ {ticker} baru lolos screener!\nSummary: {rec}\nIndikator:\n"
+            indicators = ta_cache[ticker]["indicators"]
+            for k, v in indicators.items():
+                msg += f"{k}: {v}\n"
+            send_message(chat_id, msg)
+        elif last_screener_results[ticker] != rec:
+            msg = f"🔄 {ticker} rekomendasi berubah: {last_screener_results[ticker]} → {rec}\nIndikator:\n"
+            indicators = ta_cache[ticker]["indicators"]
+            for k, v in indicators.items():
+                msg += f"{k}: {v}\n"
+            send_message(chat_id, msg)
+
+    # 2. Ticker yang sebelumnya lolos tapi sekarang tidak lagi
+    for ticker in last_screener_results:
+        if ticker not in current_results:
+            send_message(chat_id, f"❌ {ticker} keluar dari screener (tidak lagi memenuhi kriteria)")
+
+    # Update hasil terakhir
+    last_screener_results = current_results.copy()
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
