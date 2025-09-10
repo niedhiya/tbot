@@ -2,8 +2,8 @@ import time
 import os
 import requests
 import pandas as pd
-import pandas_ta as ta
 import yfinance as yf
+import talib
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
@@ -11,9 +11,8 @@ URL = f"https://api.telegram.org/bot{TOKEN}"
 # Load semua ticker IDX dari file XLSX
 def load_idx_tickers(file_path="tickers_idx.xlsx"):
     df = pd.read_excel(file_path)
-    # Ambil kolom 'Code' atau 'Ticker' sesuai nama kolom di file XLSX IDX
-    tickers = df['Code'].astype(str).tolist()
-    tickers = [t + ".JK" for t in tickers]  # format Yahoo Finance IDX
+    tickers = df['Code'].astype(str).tolist()  # sesuaikan kolom di XLSX IDX
+    tickers = [t + ".JK" for t in tickers]    # format Yahoo Finance IDX
     return tickers
 
 def send_message(chat_id, text):
@@ -24,11 +23,9 @@ def check_macd_golden_cross(ticker):
         df = yf.download(ticker, period="2d", interval="1m")
         if len(df) < 26:
             return False
-        macd = ta.macd(df['Close'])
-        df = df.join(macd)
+        macd, signal, hist = talib.MACD(df['Close'], fastperiod=12, slowperiod=26, signalperiod=9)
         # Golden Cross: MACD melintasi signal dari bawah ke atas
-        if df['MACD_12_26_9'].iloc[-2] < df['MACDs_12_26_9'].iloc[-2] and \
-           df['MACD_12_26_9'].iloc[-1] > df['MACDs_12_26_9'].iloc[-1]:
+        if macd.iloc[-2] < signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1]:
             return True
     except Exception as e:
         print(f"Error {ticker}: {e}")
