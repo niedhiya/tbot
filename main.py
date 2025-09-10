@@ -9,7 +9,6 @@ URL = f"https://api.telegram.org/bot{TOKEN}"
 
 INTERVAL = Interval.INTERVAL_1_DAY
 CACHE_EXPIRY = 60
-
 ta_cache = {}  # {ticker: {indicators, summary}}
 
 # Ambil list ticker IDX dari TradingView Scanner JSON
@@ -26,9 +25,11 @@ def load_idx_tickers_from_tv():
         data = r.json()
         tickers = []
         for item in data.get('data', []):
-            name = item.get('d', [])[0]  # biasanya kolom pertama adalah symbol
-            if name:
-                tickers.append(name.replace('IDX:',''))  # hapus prefix IDX jika ada
+            d_values = item.get('d', [])
+            if len(d_values) > 0:
+                name = d_values[0]
+                if name:
+                    tickers.append(name.replace('IDX:',''))  # hapus prefix IDX
         return tickers
     except Exception as e:
         print(f"Gagal ambil ticker dari TradingView: {e}")
@@ -57,7 +58,6 @@ def get_tv_ta(symbol, retries=3):
 
 # /ta_all dengan log ke Telegram
 def ta_all_loop(chat_id):
-    log_msgs = []
     for t in tickers_list:
         indicators, summary = get_tv_ta(t)
         if indicators:
@@ -65,9 +65,8 @@ def ta_all_loop(chat_id):
             msg = f"✅ {t}: TA berhasil diambil. Summary: {summary.get('RECOMMENDATION')}"
         else:
             msg = f"❌ {t}: Gagal diambil"
-        log_msgs.append(msg)
         send_message(chat_id, msg)
-        time.sleep(1)
+        time.sleep(1)  # delay supaya tidak kena rate limit
 
     # Simpan ke Excel setelah selesai
     df_list = []
@@ -90,7 +89,7 @@ def main():
                 message = update.get("message")
                 if message:
                     chat_id = message["chat"]["id"]
-                    text = message.get("text","").lower()+"
+                    text = message.get("text", "").lower()
 
                     if "/start" in text:
                         send_message(chat_id, "Bot aktif. Perintah:\n/ta <TICKER>\n/ta_all")
@@ -99,6 +98,20 @@ def main():
                         send_message(chat_id, "Mulai mengambil TA semua ticker IDX...")
                         ta_all_loop(chat_id)
                         send_message(chat_id, "✅ Selesai semua ticker.")
+
+                    elif text.startswith("/ta "):
+                        parts = text.split()
+                        if len(parts) == 2:
+                            symbol = parts[1].upper()
+                            indicators, summary = get_tv_ta(symbol)
+                            if indicators:
+                                msg = f"{symbol} TA:\n"
+                                for k,v in indicators.items():
+                                    msg += f"{k}: {v}\n"
+                                msg += f"Summary: {summary.get('RECOMMENDATION')}"
+                                send_message(chat_id, msg)
+                            else:
+                                send_message(chat_id, f"TA {symbol} tidak tersedia")
 
                     offset = update["update_id"] + 1
         except Exception as e:
