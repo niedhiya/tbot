@@ -47,6 +47,11 @@ def get_cached_ta(symbol):
         ta_cache[symbol] = {'time': now, 'data': indicators, 'summary': summary}
     return indicators, summary
 
+# Preload TA semua ticker sesuai interval
+def preload_all_ta():
+    for t in tickers_list:
+        get_cached_ta(t)
+
 # Screener dynamic
 screener_filters = {
     'MACD': 'Golden Cross',  # contoh default filter
@@ -56,6 +61,7 @@ screener_filters = {
 }
 
 def run_screener():
+    preload_all_ta()  # pastikan semua TA di-cache
     results = []
     for t in tickers_list:
         indicators, summary = get_cached_ta(t)
@@ -94,6 +100,9 @@ def main():
     Thread(target=auto_check, daemon=True).start()
     print("Bot started...")
 
+    # preload semua TA sesuai interval saat bot start
+    preload_all_ta()
+
     while True:
         try:
             updates = requests.get(f"{URL}/getUpdates", params={"offset": offset, "timeout":100}).json()
@@ -123,6 +132,7 @@ def main():
 
                     elif text.startswith("/ta_all"):
                         msg = "TA semua ticker IDX:\n"
+                        preload_all_ta()  # update semua TA
                         for t in tickers_list:
                             indicators, summary = get_cached_ta(t)
                             if indicators:
