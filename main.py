@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Load ticker IDX dari CSV
 df = pd.read_csv("tickers_idx.csv")  # pastikan kolom ada 'KodeEmiten'
-tickers_list = [f"{row}.JK" for row in df['KodeEmiten']]
+tickers_list = [f"{row}.JK" for row in df['Code']]
 
 print(f"Total tickers: {len(tickers_list)}")
 
