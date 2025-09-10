@@ -4,7 +4,7 @@ import requests
 import threading
 from tradingview_ta import TA_Handler, Interval
 
-# ---------------- Telegram Config ----------------
+# ---------------- Config Telegram ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
 
@@ -13,11 +13,11 @@ TA_INTERVAL = Interval.INTERVAL_1_MINUTE
 UPDATE_INTERVAL = 600  # 10 menit
 
 # Cache TA
-ta_cache = {}  # {ticker: {"indicators":..., "summary":..., "timestamp":...}}
+ta_cache = {}
 cache_expiry = 600  # detik
 
-# User-defined filter criteria
-criteria = {}  # user harus set via /set_criteria
+# User-defined filter
+criteria = {}
 
 # Thread control
 screener_thread_running = False
@@ -25,15 +25,14 @@ screener_thread_running = False
 # Hasil screener terakhir
 last_screener_results = {}
 
-# ---------------- Ambil ticker dari TradingView ----------------
+# Delay adaptif
+default_delay = 2
+current_delay = default_delay
+
+# ---------------- Ambil ticker ----------------
 def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
-    payload = {
-        "filter": [],
-        "options": {"lang": "en"},
-        "symbols": {"query": {"types": []}},
-        "columns": ["name"]
-    }
+    payload = {"filter":[],"options":{"lang":"en"},"symbols":{"query":{"types":[]}},"columns":["name"]}
     try:
         r = requests.post(url, json=payload)
         data = r.json()
@@ -67,11 +66,11 @@ def send_error(text):
             print(f"ERROR sending error message: {text}")
     print(f"ERROR: {text}")
 
-# ---------------- Ambil TA per ticker ----------------
-def get_tv_ta(symbol, retries=3):
-    for i in range(retries):
+# ---------------- Ambil TA per ticker adaptif ----------------
+def get_tv_ta(symbol, retries=5):
+    global current_delay
+    for attempt in range(retries):
         try:
-            # Gunakan cache jika belum expired
             cached = ta_cache.get(symbol)
             if cached and time.time() - cached['timestamp'] < cache_expiry:
                 return cached['indicators'], cached['summary']
@@ -83,22 +82,32 @@ def get_tv_ta(symbol, retries=3):
                 "summary": analysis.summary,
                 "timestamp": time.time()
             }
+
+            if current_delay > default_delay:
+                current_delay = max(default_delay, current_delay - 0.5)
+
+            time.sleep(current_delay)
             return analysis.indicators, analysis.summary
+
         except Exception as e:
-            send_error(f"{symbol} attempt {i+1} failed: {e}")
-            time.sleep(2)  # delay lebih panjang
+            err_str = str(e)
+            if "429" in err_str:
+                current_delay += 1
+                print(f"⚠️ {symbol} 429 detected, increasing delay to {current_delay} sec")
+            else:
+                print(f"{symbol} attempt {attempt+1} failed: {e}")
+            time.sleep(current_delay)
     return None, None
 
 # ---------------- Screener ----------------
 def run_screener(chat_id):
     global last_screener_results
-
     if not criteria:
-        send_message(chat_id, "❌ Silakan set kriteria screener terlebih dahulu menggunakan /set_criteria")
+        send_message(chat_id, "❌ Silakan set kriteria screener terlebih dahulu")
         return
 
-    current_results = {}
-    batch_size = 10  # batch 10 ticker
+    batch_size = 10
+    any_lolos = False  # flag jika ada ticker lolos
 
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
@@ -107,7 +116,6 @@ def run_screener(chat_id):
             if not indicators:
                 continue
 
-            # Filter user-defined criteria
             match = True
             for key, condition in criteria.items():
                 val = indicators.get(key)
@@ -129,32 +137,22 @@ def run_screener(chat_id):
                         break
 
             if match:
-                current_results[ticker] = summary.get('RECOMMENDATION')
-            time.sleep(2)  # delay antar ticker
+                any_lolos = True
+                if ticker not in last_screener_results or last_screener_results[ticker] != summary.get('RECOMMENDATION'):
+                    msg = f"✅ {ticker} lolos screener!\nSummary: {summary.get('RECOMMENDATION')}\nIndikator:\n"
+                    for k, v in indicators.items():
+                        msg += f"{k}: {v}\n"
+                    send_message(chat_id, msg)
+                    last_screener_results[ticker] = summary.get('RECOMMENDATION')
+            else:
+                if ticker in last_screener_results:
+                    send_message(chat_id, f"❌ {ticker} keluar dari screener")
+                    del last_screener_results[ticker]
 
-    # Bandingkan dengan hasil terakhir
-    # 1. Ticker baru lolos atau berubah rekomendasi
-    for ticker, rec in current_results.items():
-        if ticker not in last_screener_results:
-            msg = f"✅ {ticker} baru lolos screener!\nSummary: {rec}\nIndikator:\n"
-            indicators = ta_cache[ticker]["indicators"]
-            for k, v in indicators.items():
-                msg += f"{k}: {v}\n"
-            send_message(chat_id, msg)
-        elif last_screener_results[ticker] != rec:
-            msg = f"🔄 {ticker} rekomendasi berubah: {last_screener_results[ticker]} → {rec}\nIndikator:\n"
-            indicators = ta_cache[ticker]["indicators"]
-            for k, v in indicators.items():
-                msg += f"{k}: {v}\n"
-            send_message(chat_id, msg)
+            time.sleep(0.5)
 
-    # 2. Ticker yang sebelumnya lolos tapi sekarang tidak lagi
-    for ticker in last_screener_results:
-        if ticker not in current_results:
-            send_message(chat_id, f"❌ {ticker} keluar dari screener (tidak lagi memenuhi kriteria)")
-
-    # Update hasil terakhir
-    last_screener_results = current_results.copy()
+    if not any_lolos:
+        send_message(chat_id, "⚠️ Screener selesai, tidak ada ticker yang lolos kriteria saat ini.")
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
@@ -230,13 +228,15 @@ def main():
                                 "5m": Interval.INTERVAL_5_MINUTES,
                                 "15m": Interval.INTERVAL_15_MINUTES,
                                 "1h": Interval.INTERVAL_1_HOUR,
+                                "3h": Interval.INTERVAL_3_HOURS,
+                                "4h": Interval.INTERVAL_4_HOURS,
                                 "1d": Interval.INTERVAL_1_DAY
                             }
                             if interval_str in mapping:
                                 TA_INTERVAL = mapping[interval_str]
                                 send_message(chat_id, f"✅ Interval TA diperbarui menjadi {interval_str}")
                             else:
-                                send_message(chat_id, "Format interval salah. Contoh: /set_interval 1m / 5m / 1d")
+                                send_message(chat_id, "Format interval salah. Contoh: /set_interval 1m / 5m / 1h / 3h / 4h / 1d")
 
                     offset = update["update_id"] + 1
         except Exception as e:
