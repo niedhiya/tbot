@@ -7,17 +7,20 @@ from tradingview_ta import TA_Handler, Interval
 # ---------------- Config Telegram ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
-UPDATE_INTERVAL = 600  # 10 menit default
-TA_INTERVAL = Interval.INTERVAL_1_HOUR
+UPDATE_INTERVAL = 600  # Screener refresh tiap 10 menit
+TA_INTERVAL = Interval.INTERVAL_1_HOUR  # Interval 1 jam
 
 screener_thread_running = False
 last_crossup_results = {}
-default_delay = 2
-current_delay = default_delay
-ta_cache = {}
-cache_expiry = 600
 
-# Ambil ticker IDX
+# Delay antar request
+default_delay = 20
+current_delay = default_delay
+
+ta_cache = {}
+cache_expiry = 600  # 10 menit cache TA
+
+# ---------------- Ambil ticker IDX ----------------
 def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
     payload = {"filter":[],"options":{"lang":"en"},"symbols":{"query":{"types":[]}},"columns":["name"]}
@@ -39,24 +42,24 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# ---------------- Ambil TA per ticker adaptif ----------------
+# ---------------- Ambil TA per ticker ----------------
 def get_tv_ta(symbol, retries=5):
     global current_delay
     for attempt in range(retries):
         try:
             cached = ta_cache.get(symbol)
             if cached and time.time() - cached['timestamp'] < cache_expiry:
-                return cached['indicators'], cached['summary']
+                return cached['indicators']
 
             handler = TA_Handler(symbol=symbol, screener="indonesia", exchange="IDX", interval=TA_INTERVAL)
             analysis = handler.get_analysis()
             ta_cache[symbol] = {
                 "indicators": analysis.indicators,
-                "summary": analysis.summary,
                 "timestamp": time.time()
             }
+
             time.sleep(current_delay)
-            return analysis.indicators, analysis.summary
+            return analysis.indicators
 
         except Exception as e:
             err_str = str(e)
@@ -66,10 +69,10 @@ def get_tv_ta(symbol, retries=5):
             else:
                 print(f"{symbol} attempt {attempt+1} failed: {e}")
             time.sleep(current_delay)
-    return None, None
+    return None
 
-# ---------------- Screener EMA5 crossup EMA20 ----------------
-def run_screener_ema_crossup(chat_id):
+# ---------------- Screener EMA5 crossup EMA20 + volume ----------------
+def run_screener_ema_crossup_volume(chat_id):
     global last_crossup_results
     batch_size = 10
     any_crossup = False
@@ -77,38 +80,41 @@ def run_screener_ema_crossup(chat_id):
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
         for ticker in batch:
-            indicators, summary = get_tv_ta(ticker)
+            indicators = get_tv_ta(ticker)
             if not indicators:
                 continue
 
             ema5 = indicators.get("EMA5")
             ema20 = indicators.get("EMA20")
+            vol = indicators.get("volume")
+            vol_ma20 = indicators.get("volumeMA20")
 
-            if ema5 is None or ema20 is None:
+            if None in [ema5, ema20, vol, vol_ma20]:
                 continue
 
-            crossup = ema5 > ema20
+            crossup = ema5 > ema20 and vol >= vol_ma20
+
             if crossup:
                 any_crossup = True
                 if ticker not in last_crossup_results or not last_crossup_results[ticker]:
-                    msg = f"✅ {ticker} EMA5 crossup EMA20!\nEMA5: {ema5}\nEMA20: {ema20}\nSummary: {summary.get('RECOMMENDATION')}"
+                    msg = f"✅ {ticker} EMA5 crossup EMA20 + Volume OK\nEMA5: {ema5}\nEMA20: {ema20}\nVol: {vol}\nVolMA20: {vol_ma20}"
                     send_message(chat_id, msg)
                     last_crossup_results[ticker] = True
             else:
                 if ticker in last_crossup_results and last_crossup_results[ticker]:
-                    send_message(chat_id, f"❌ {ticker} keluar dari EMA5 crossup EMA20")
+                    send_message(chat_id, f"❌ {ticker} keluar dari EMA5 crossup EMA20 / Volume tidak memenuhi")
                     last_crossup_results[ticker] = False
 
             time.sleep(0.5)
 
     if not any_crossup:
-        send_message(chat_id, "⚠️ Screener selesai, tidak ada EMA5 crossup EMA20 saat ini.")
+        send_message(chat_id, "⚠️ Screener selesai, tidak ada EMA5 crossup EMA20 dengan volume >= MA20 saat ini.")
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
     global screener_thread_running
     while screener_thread_running:
-        run_screener_ema_crossup(chat_id)
+        run_screener_ema_crossup_volume(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
 # ---------------- Telegram Main Loop ----------------
@@ -125,27 +131,13 @@ def main():
                     text = message.get("text", "").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot EMA crossup aktif.\nPerintah:\n/ta <TICKER>\n/screener_start\n/screener_stop\n/set_interval")
-
-                    elif text.startswith("/ta "):
-                        parts = text.split()
-                        if len(parts) == 2:
-                            symbol = parts[1].upper()
-                            indicators, summary = get_tv_ta(symbol)
-                            if indicators:
-                                msg = f"{symbol} TA (Interval: {TA_INTERVAL}):\n"
-                                for k, v in indicators.items():
-                                    msg += f"{k}: {v}\n"
-                                msg += f"Summary: {summary.get('RECOMMENDATION')}"
-                                send_message(chat_id, msg)
-                            else:
-                                send_message(chat_id, f"TA {symbol} tidak tersedia")
+                        send_message(chat_id, "Bot EMA5 crossup EMA20 + Volume aktif.\nPerintah:\n/screener_start\n/screener_stop\n/set_interval")
 
                     elif text.startswith("/screener_start"):
                         if not screener_thread_running:
                             screener_thread_running = True
                             threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
-                            send_message(chat_id, f"✅ Screener EMA5 crossup EMA20 realtime dimulai (refresh tiap {UPDATE_INTERVAL//60} menit)")
+                            send_message(chat_id, "✅ Screener EMA5 crossup EMA20 + Volume realtime dimulai (refresh tiap 10 menit)")
                         else:
                             send_message(chat_id, "Screener sudah berjalan.")
 
