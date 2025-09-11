@@ -2,24 +2,22 @@ import time
 import os
 import requests
 import threading
-from tradingview_ta import get_multiple_analysis, Interval
+from tradingview_ta import get_analysis, get_multiple_analysis, Interval
 import re
 
-# ---------------- Telegram & Bot Config ----------------
+# === Konfigurasi Telegram ===
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
-UPDATE_INTERVAL = 600  # Screener tiap 10 menit
+UPDATE_INTERVAL = 600  # 10 menit
 TA_INTERVAL = Interval.INTERVAL_1_HOUR
-DELAY = 10  # Delay antar batch detik
+DELAY = 10  # Delay antar batch (detik)
 
 screener_thread_running = False
 last_screened_results = {}
 custom_filters = []
+TA_cache = {}
 
-# ---------------- Cache TA ----------------
-TA_cache = {}  # key: ticker, value: indikator terakhir
-
-# ---------------- Ambil semua ticker dari TradingView ----------------
+# === Ambil list ticker dari TradingView ===
 def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
     payload = {"filter":[],"options":{"lang":"en"},"symbols":{"query":{"types":[]}},"columns":["name"]}
@@ -30,23 +28,20 @@ def load_idx_tickers_from_tv():
             return []
         data = r.json()
         return [item['d'][0].replace('IDX:', '') for item in data.get('data', []) if item.get('d')]
-    except ValueError:
-        print(f"[ERROR] Response not JSON: {r.text[:100]}...")
-        return []
     except Exception as e:
         print(f"[ERROR] Load ticker: {e}")
         return []
 
 tickers_list = load_idx_tickers_from_tv()
 
-# ---------------- Kirim pesan ke Telegram ----------------
+# === Kirim pesan Telegram ===
 def send_message(chat_id, text):
     try:
         requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
-# ---------------- Ambil TA batch dari TradingView ----------------
+# === Ambil TA batch dari TradingView ===
 def get_tv_batch(tickers):
     try:
         data = get_multiple_analysis(
@@ -60,15 +55,27 @@ def get_tv_batch(tickers):
         print(f"[ERROR] Batch TA: {e}")
         return {}
 
-# ---------------- Parsing Filter User ----------------
+# === Fungsi TA satuan ===
+def get_ta_single(ticker):
+    try:
+        return get_analysis(
+            symbol=f"IDX:{ticker}",
+            screener="indonesia",
+            interval=TA_INTERVAL
+        )
+    except Exception as e:
+        print(f"[ERROR] get_ta_single: {e}")
+        return None
+
+# === Parse filter user ===
 def parse_filter(expr):
-    # Terima seluruh expression, contoh: "STOCHK crossup STOCHD" atau "RSI>50"
     match = re.match(r"(\w+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\w+)", expr.lower())
     if match:
         ind1, op, ind2 = match.groups()
         return ind1.upper(), op.lower(), ind2.upper()
     return None
 
+# === Cek kondisi filter ===
 def check_conditions(indicators, filters):
     for ind1, op, ind2 in filters:
         val1 = indicators.get(ind1)
@@ -101,10 +108,10 @@ def check_conditions(indicators, filters):
                 return False
     return True
 
-# ---------------- Fetch semua TA sekaligus ----------------
+# === Ambil semua TA (cache) ===
 def fetch_all_ta():
     global TA_cache
-    batch_size = 5  # batch kecil untuk kurangi 429
+    batch_size = 5
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
         results = get_tv_batch(batch)
@@ -112,7 +119,7 @@ def fetch_all_ta():
             ticker = symbol.replace("IDX:", "")
             TA_cache[ticker] = result.indicators
 
-# ---------------- Jalankan Screener dari cache ----------------
+# === Screener dari cache ===
 def run_screener_from_cache(chat_id):
     global last_screened_results
 
@@ -137,15 +144,15 @@ def run_screener_from_cache(chat_id):
 
     last_screened_results = {k: True for k in matched_now}
 
-# ---------------- Loop Screener ----------------
+# === Loop Screener ===
 def screener_thread(chat_id):
     global screener_thread_running
-    fetch_all_ta()  # ambil semua TA dulu
+    fetch_all_ta()
     while screener_thread_running:
         run_screener_from_cache(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
-# ---------------- Main Telegram Bot ----------------
+# === Main Telegram Bot ===
 def main():
     global TA_INTERVAL, screener_thread_running, custom_filters
     offset = None
@@ -162,10 +169,11 @@ def main():
                         send_message(chat_id,
 """📊 Bot Screener IDX Siap.
 Perintah:
-/set_filter <indikator>
+/set_filter <filter>
 /set_interval <1m|5m|15m|1h|1d>
 /screener_start
-/screener_stop""")
+/screener_stop
+/ta <ticker>""")
 
                     elif text.lower().startswith("/set_filter"):
                         raw_expr = text.replace("/set_filter", "").strip().upper()
@@ -192,7 +200,7 @@ Perintah:
                                 TA_INTERVAL = interval_map[key]
                                 send_message(chat_id, f"✅ Interval diset ke: {key}")
                             else:
-                                send_message(chat_id, "⛔ Interval tidak dikenali. Gunakan: 1m, 5m, 15m, 1h, 4h, 1d")
+                                send_message(chat_id, "⛔ Interval tidak dikenali.")
 
                     elif text.lower().startswith("/screener_start"):
                         if not screener_thread_running:
@@ -205,6 +213,22 @@ Perintah:
                     elif text.lower().startswith("/screener_stop"):
                         screener_thread_running = False
                         send_message(chat_id, "🛑 Screener dihentikan.")
+
+                    elif text.lower().startswith("/ta"):
+                        parts = text.split()
+                        if len(parts) == 2:
+                            ticker = parts[1].upper()
+                            analysis = get_ta_single(ticker)
+                            if analysis:
+                                indicators = analysis.indicators
+                                summary = analysis.summary
+                                msg = f"📊 TA {ticker} ({TA_INTERVAL}):\n"
+                                msg += f"Summary: {summary.get('RECOMMENDATION')}\n"
+                                for k, v in indicators.items():
+                                    msg += f"{k}: {v}\n"
+                                send_message(chat_id, msg[:4096])
+                            else:
+                                send_message(chat_id, f"⛔ Data tidak tersedia untuk {ticker}")
 
                     offset = update["update_id"] + 1
         except Exception as e:
