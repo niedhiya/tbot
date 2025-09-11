@@ -3,13 +3,14 @@ import os
 import requests
 import threading
 from tradingview_ta import get_multiple_analysis, Interval
+import re
 
 # ---------------- Telegram & Bot Config ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
-UPDATE_INTERVAL = 600  # tiap 10 menit
-TA_INTERVAL = Interval.INTERVAL_1_HOUR  # default interval
-DELAY = 10  # delay antar batch (detik)
+UPDATE_INTERVAL = 600  # Screener tiap 10 menit
+TA_INTERVAL = Interval.INTERVAL_1_HOUR
+DELAY = 10  # Delay antar batch detik
 
 screener_thread_running = False
 last_screened_results = {}
@@ -51,25 +52,44 @@ def get_tv_batch(tickers):
         time.sleep(DELAY)
         return {}
 
-# ---------------- Filter kriteria user ----------------
+# ---------------- Parsing Filter User ----------------
 def parse_filter(expr):
-    import re
-    match = re.match(r"(\w+)([><=]{1,2})([\d\.]+)", expr)
+    match = re.match(r"(\w+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\w+)", expr.lower())
     if match:
-        ind, op, val = match.groups()
-        return ind.upper(), op, float(val)
+        ind1, op, ind2 = match.groups()
+        return ind1.upper(), op.lower(), ind2.upper()
     return None
 
 def check_conditions(indicators, filters):
-    for ind, op, val in filters:
-        i_val = indicators.get(ind)
-        if i_val is None:
+    for ind1, op, ind2 in filters:
+        val1 = indicators.get(ind1)
+        try:
+            val2 = float(ind2)
+        except:
+            val2 = indicators.get(ind2)
+
+        if val1 is None or val2 is None:
             return False
-        if op == ">" and not (i_val > val): return False
-        if op == "<" and not (i_val < val): return False
-        if op == ">=" and not (i_val >= val): return False
-        if op == "<=" and not (i_val <= val): return False
-        if op == "==" and not (i_val == val): return False
+
+        if op == ">" and not (val1 > val2): return False
+        if op == "<" and not (val1 < val2): return False
+        if op == ">=" and not (val1 >= val2): return False
+        if op == "<=" and not (val1 <= val2): return False
+        if op == "==" and not (val1 == val2): return False
+        if op == "crossup":
+            prev_val1 = indicators.get(f"PREV_{ind1}")
+            prev_val2 = indicators.get(f"PREV_{ind2}")
+            if prev_val1 is None or prev_val2 is None:
+                return False
+            if not (prev_val1 < prev_val2 and val1 > val2):
+                return False
+        if op == "crossdown":
+            prev_val1 = indicators.get(f"PREV_{ind1}")
+            prev_val2 = indicators.get(f"PREV_{ind2}")
+            if prev_val1 is None or prev_val2 is None:
+                return False
+            if not (prev_val1 > prev_val2 and val1 < val2):
+                return False
     return True
 
 # ---------------- Jalankan Screener ----------------
@@ -150,7 +170,7 @@ Perintah:
                                 "1h": Interval.INTERVAL_1_HOUR,
                                 "1d": Interval.INTERVAL_1_DAY,
                                 "4h": Interval.INTERVAL_4_HOURS,
-                                "3h": Interval.INTERVAL_1_HOUR  # fallback (lib belum support 3h)
+                                "3h": Interval.INTERVAL_1_HOUR
                             }
                             key = parts[1]
                             if key in interval_map:
