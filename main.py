@@ -1,30 +1,21 @@
-import os
 import time
+import os
 import requests
 import threading
-from tradingview_ta import get_multiple_analysis, Interval, TA_Handler
-from flask import Flask, request
+from tradingview_ta import get_multiple_analysis, Interval
 
-# --- Config ---
+# ---------------- Telegram & Bot Config ----------------
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
-UPDATE_INTERVAL = 600
-BATCH_DELAY = 10
-BATCH_SIZE = 10
+UPDATE_INTERVAL = 600  # tiap 10 menit
+TA_INTERVAL = Interval.INTERVAL_1_HOUR  # default interval
+DELAY = 10  # delay antar batch (detik)
 
-TA_INTERVAL = Interval.INTERVAL_1_HOUR
-USER_CRITERIA = {}
-LAST_RESULTS = {}
 screener_thread_running = False
+last_screened_results = {}
+custom_filters = []
 
-app = Flask(__name__)
-
-def send_message(chat_id, text):
-    try:
-        requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
-    except Exception as e:
-        print("Send message error:", e)
-
+# ---------------- Ambil semua ticker dari TradingView ----------------
 def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
     payload = {"filter":[],"options":{"lang":"en"},"symbols":{"query":{"types":[]}},"columns":["name"]}
@@ -33,154 +24,157 @@ def load_idx_tickers_from_tv():
         data = r.json()
         return [item['d'][0].replace('IDX:', '') for item in data.get('data', []) if item.get('d')]
     except Exception as e:
-        print(f"Ticker error: {e}")
+        print(f"[ERROR] Load ticker: {e}")
         return []
 
 tickers_list = load_idx_tickers_from_tv()
 
-def eval_criteria(indicators):
-    for key, rule in USER_CRITERIA.items():
-        val = indicators.get(key)
-        if val is None:
+# ---------------- Kirim pesan ke Telegram ----------------
+def send_message(chat_id, text):
+    try:
+        requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
+    except Exception as e:
+        print(f"[ERROR] send_message: {e}")
+
+# ---------------- Ambil TA dari TradingView ----------------
+def get_tv_batch(tickers):
+    try:
+        data = get_multiple_analysis(
+            screener="indonesia",
+            interval=TA_INTERVAL,
+            symbols=[f"IDX:{t}" for t in tickers]
+        )
+        time.sleep(DELAY)
+        return data
+    except Exception as e:
+        print(f"[ERROR] Batch TA: {e}")
+        time.sleep(DELAY)
+        return {}
+
+# ---------------- Filter kriteria user ----------------
+def parse_filter(expr):
+    import re
+    match = re.match(r"(\w+)([><=]{1,2})([\d\.]+)", expr)
+    if match:
+        ind, op, val = match.groups()
+        return ind.upper(), op, float(val)
+    return None
+
+def check_conditions(indicators, filters):
+    for ind, op, val in filters:
+        i_val = indicators.get(ind)
+        if i_val is None:
             return False
-        if rule.startswith(">") and not val > float(rule[1:]):
-            return False
-        elif rule.startswith("<") and not val < float(rule[1:]):
-            return False
-        elif rule.startswith("=") and not val == float(rule[1:]):
-            return False
+        if op == ">" and not (i_val > val): return False
+        if op == "<" and not (i_val < val): return False
+        if op == ">=" and not (i_val >= val): return False
+        if op == "<=" and not (i_val <= val): return False
+        if op == "==" and not (i_val == val): return False
     return True
 
+# ---------------- Jalankan Screener ----------------
 def run_screener(chat_id):
-    global LAST_RESULTS
-    tickers = tickers_list.copy()
-    found = []
+    global last_screened_results
+    if not custom_filters:
+        send_message(chat_id, "⚠️ Belum ada filter. Gunakan /set_filter contoh: /set_filter EMA5>EMA20 RSI>50")
+        return
 
-    for i in range(0, len(tickers), BATCH_SIZE):
-        batch = tickers[i:i + BATCH_SIZE]
-        try:
-            result = get_multiple_analysis(
-                screener="indonesia",
-                interval=TA_INTERVAL,
-                symbols=[f"IDX:{t}" for t in batch]
-            )
-        except Exception as e:
-            print(f"[ERROR] Batch error: {e}")
-            time.sleep(BATCH_DELAY)
-            continue
+    batch_size = 10
+    matched_now = {}
 
-        for symbol, data in result.items():
+    for i in range(0, len(tickers_list), batch_size):
+        batch = tickers_list[i:i+batch_size]
+        results = get_tv_batch(batch)
+
+        for symbol, result in results.items():
             ticker = symbol.replace("IDX:", "")
-            indicators = data.indicators
-            match = eval_criteria(indicators)
+            indicators = result.indicators
+            passed = check_conditions(indicators, custom_filters)
 
-            if match:
-                found.append(ticker)
-                if not LAST_RESULTS.get(ticker, False):
-                    msg = f"✅ {ticker} memenuhi kriteria\n" + "\n".join(
-                        [f"{k}: {indicators.get(k)}" for k in USER_CRITERIA.keys()]
-                    )
+            if passed:
+                matched_now[ticker] = indicators
+                if ticker not in last_screened_results or not last_screened_results[ticker]:
+                    msg = f"✅ {ticker} lolos filter:"
+                    for ind, _, _ in custom_filters:
+                        msg += f"\n{ind}: {indicators.get(ind)}"
                     send_message(chat_id, msg)
-                    LAST_RESULTS[ticker] = True
             else:
-                if LAST_RESULTS.get(ticker, False):
-                    send_message(chat_id, f"❌ {ticker} tidak lagi memenuhi kriteria.")
-                    LAST_RESULTS[ticker] = False
+                if ticker in last_screened_results and last_screened_results[ticker]:
+                    send_message(chat_id, f"❌ {ticker} keluar dari filter")
+                    matched_now[ticker] = False
 
-        time.sleep(BATCH_DELAY)
+    last_screened_results = {k: True for k in matched_now}
 
-    if not found:
-        send_message(chat_id, "🔍 Tidak ada saham yang memenuhi kriteria saat ini.")
-
-def screener_loop(chat_id):
+# ---------------- Loop Screener ----------------
+def screener_thread(chat_id):
     global screener_thread_running
     while screener_thread_running:
         run_screener(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
-def parse_criteria(text):
-    try:
-        parts = text.replace("/set_criteria", "").strip().split("AND")
-        USER_CRITERIA.clear()
-        for part in parts:
-            part = part.strip()
-            if ">" in part:
-                k, v = part.split(">")
-                USER_CRITERIA[k.strip().upper()] = ">" + v.strip()
-            elif "<" in part:
-                k, v = part.split("<")
-                USER_CRITERIA[k.strip().upper()] = "<" + v.strip()
-            elif "=" in part:
-                k, v = part.split("=")
-                USER_CRITERIA[k.strip().upper()] = "=" + v.strip()
-        return True
-    except:
-        return False
+# ---------------- Main Telegram Bot ----------------
+def main():
+    global TA_INTERVAL, screener_thread_running, custom_filters
+    offset = None
+    while True:
+        try:
+            updates = requests.get(f"{URL}/getUpdates", params={"offset": offset, "timeout":100}).json()
+            for update in updates.get("result", []):
+                message = update.get("message")
+                if message:
+                    chat_id = message["chat"]["id"]
+                    text = message.get("text", "").lower()
 
-def fetch_ta_for_ticker(ticker):
-    try:
-        handler = TA_Handler(symbol=ticker, screener="indonesia", exchange="IDX", interval=TA_INTERVAL)
-        analysis = handler.get_analysis()
-        indicators = analysis.indicators
-        lines = [f"{k}: {v}" for k, v in indicators.items()]
-        return "\n".join(lines[:20])  # limit output
-    except Exception as e:
-        return f"❌ Gagal mengambil data TA untuk {ticker}: {e}"
+                    if "/start" in text:
+                        send_message(chat_id,
+"""📊 Bot Screener IDX Siap.
+Perintah:
+/set_filter <indikator>
+/set_interval <1m|5m|15m|1h|1d>
+/screener_start
+/screener_stop""")
 
-@app.route("/", methods=["POST"])
-def webhook():
-    global TA_INTERVAL, screener_thread_running
-    update = request.get_json()
-    message = update.get("message", {})
-    text = message.get("text", "")
-    chat_id = message["chat"]["id"]
+                    elif text.startswith("/set_filter"):
+                        raw = text.replace("/set_filter", "").strip().upper().split()
+                        parsed = [parse_filter(x) for x in raw if parse_filter(x)]
+                        custom_filters = parsed
+                        send_message(chat_id, f"✅ Filter diset:\n" + "\n".join(raw))
 
-    if "/start" in text:
-        send_message(chat_id, "🤖 Screener aktif.\nPerintah:\n/set_criteria EMA5>EMA20 AND RSI>50\n/set_interval 1h\n/screener_start\n/screener_stop\n/ta BBCA")
+                    elif text.startswith("/set_interval"):
+                        parts = text.split()
+                        if len(parts) == 2:
+                            interval_map = {
+                                "1m": Interval.INTERVAL_1_MINUTE,
+                                "5m": Interval.INTERVAL_5_MINUTES,
+                                "15m": Interval.INTERVAL_15_MINUTES,
+                                "1h": Interval.INTERVAL_1_HOUR,
+                                "1d": Interval.INTERVAL_1_DAY,
+                                "4h": Interval.INTERVAL_4_HOURS,
+                                "3h": Interval.INTERVAL_1_HOUR  # fallback (lib belum support 3h)
+                            }
+                            key = parts[1]
+                            if key in interval_map:
+                                TA_INTERVAL = interval_map[key]
+                                send_message(chat_id, f"✅ Interval diset ke: {key}")
+                            else:
+                                send_message(chat_id, "⛔ Interval tidak dikenali. Gunakan: 1m, 5m, 15m, 1h, 4h, 1d")
 
-    elif text.startswith("/set_criteria"):
-        if parse_criteria(text):
-            send_message(chat_id, f"✅ Kriteria disimpan: {USER_CRITERIA}")
-        else:
-            send_message(chat_id, "❌ Format salah. Contoh:\n/set_criteria EMA5>EMA20 AND RSI>50")
+                    elif text.startswith("/screener_start"):
+                        if not screener_thread_running:
+                            screener_thread_running = True
+                            threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
+                            send_message(chat_id, "🚀 Screener dimulai!")
+                        else:
+                            send_message(chat_id, "⚠️ Screener sudah berjalan.")
 
-    elif text.startswith("/set_interval"):
-        mapping = {
-            "1m": Interval.INTERVAL_1_MINUTE,
-            "5m": Interval.INTERVAL_5_MINUTES,
-            "15m": Interval.INTERVAL_15_MINUTES,
-            "1h": Interval.INTERVAL_1_HOUR,
-            "1d": Interval.INTERVAL_1_DAY
-        }
-        param = text.split(" ")[-1].lower()
-        if param in mapping:
-            TA_INTERVAL = mapping[param]
-            send_message(chat_id, f"✅ Interval diubah ke {param}")
-        else:
-            send_message(chat_id, "❌ Interval tidak dikenal. Pilih: 1m 5m 15m 1h 1d")
+                    elif text.startswith("/screener_stop"):
+                        screener_thread_running = False
+                        send_message(chat_id, "🛑 Screener dihentikan.")
 
-    elif text.startswith("/screener_start"):
-        if not screener_thread_running:
-            screener_thread_running = True
-            threading.Thread(target=screener_loop, args=(chat_id,), daemon=True).start()
-            send_message(chat_id, "▶️ Screener dimulai.")
-        else:
-            send_message(chat_id, "Screener sudah berjalan.")
-
-    elif text.startswith("/screener_stop"):
-        screener_thread_running = False
-        send_message(chat_id, "⏹️ Screener dihentikan.")
-
-    elif text.startswith("/ta"):
-        parts = text.split()
-        if len(parts) >= 2:
-            ticker = parts[1].strip().upper()
-            ta_text = fetch_ta_for_ticker(ticker)
-            send_message(chat_id, f"📊 TA {ticker}:\n{ta_text}")
-        else:
-            send_message(chat_id, "❌ Format salah. Contoh: /ta BBCA")
-
-    return {"ok": True}
+                    offset = update["update_id"] + 1
+        except Exception as e:
+            print(f"[ERROR] Main loop: {e}")
+        time.sleep(5)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    main()
