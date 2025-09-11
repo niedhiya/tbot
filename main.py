@@ -16,6 +16,9 @@ screener_thread_running = False
 last_screened_results = {}
 custom_filters = []
 
+# ---------------- Cache TA ----------------
+TA_cache = {}  # key: ticker, value: indikator terakhir
+
 # ---------------- Ambil semua ticker dari TradingView ----------------
 def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
@@ -37,7 +40,7 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
-# ---------------- Ambil TA dari TradingView ----------------
+# ---------------- Ambil TA batch dari TradingView ----------------
 def get_tv_batch(tickers):
     try:
         data = get_multiple_analysis(
@@ -92,44 +95,48 @@ def check_conditions(indicators, filters):
                 return False
     return True
 
-# ---------------- Jalankan Screener ----------------
-def run_screener(chat_id):
-    global last_screened_results
-    if not custom_filters:
-        send_message(chat_id, "⚠️ Belum ada filter. Gunakan /set_filter contoh: /set_filter EMA5>EMA20 RSI>50")
-        return
-
+# ---------------- Fetch semua TA sekaligus ----------------
+def fetch_all_ta():
+    global TA_cache
     batch_size = 10
-    matched_now = {}
-
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
         results = get_tv_batch(batch)
-
         for symbol, result in results.items():
             ticker = symbol.replace("IDX:", "")
-            indicators = result.indicators
-            passed = check_conditions(indicators, custom_filters)
+            TA_cache[ticker] = result.indicators
 
-            if passed:
-                matched_now[ticker] = indicators
-                if ticker not in last_screened_results or not last_screened_results[ticker]:
-                    msg = f"✅ {ticker} lolos filter:"
-                    for ind, _, _ in custom_filters:
-                        msg += f"\n{ind}: {indicators.get(ind)}"
-                    send_message(chat_id, msg)
-            else:
-                if ticker in last_screened_results and last_screened_results[ticker]:
-                    send_message(chat_id, f"❌ {ticker} keluar dari filter")
-                    matched_now[ticker] = False
+# ---------------- Jalankan Screener dari cache ----------------
+def run_screener_from_cache(chat_id):
+    global last_screened_results
+
+    if not custom_filters:
+        send_message(chat_id, "⚠️ Belum ada filter. Gunakan /set_filter")
+        return
+
+    matched_now = {}
+    for ticker, indicators in TA_cache.items():
+        passed = check_conditions(indicators, custom_filters)
+        if passed:
+            matched_now[ticker] = indicators
+            if ticker not in last_screened_results or not last_screened_results[ticker]:
+                msg = f"✅ {ticker} lolos filter:"
+                for ind, _, _ in custom_filters:
+                    msg += f"\n{ind}: {indicators.get(ind)}"
+                send_message(chat_id, msg)
+        else:
+            if ticker in last_screened_results and last_screened_results[ticker]:
+                send_message(chat_id, f"❌ {ticker} keluar dari filter")
+                matched_now[ticker] = False
 
     last_screened_results = {k: True for k in matched_now}
 
 # ---------------- Loop Screener ----------------
 def screener_thread(chat_id):
     global screener_thread_running
+    fetch_all_ta()  # ambil semua TA dulu
     while screener_thread_running:
-        run_screener(chat_id)
+        run_screener_from_cache(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
 # ---------------- Main Telegram Bot ----------------
