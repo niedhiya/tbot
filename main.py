@@ -2,22 +2,22 @@ import time
 import os
 import requests
 import threading
-from tradingview_ta import get_analysis, get_multiple_analysis, Interval
 import re
+from tradingview_ta import TA_Handler, get_multiple_analysis, Interval
 
-# === Konfigurasi Telegram ===
+# === Telegram Config ===
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 URL = f"https://api.telegram.org/bot{TOKEN}"
-UPDATE_INTERVAL = 600  # 10 menit
 TA_INTERVAL = Interval.INTERVAL_1_HOUR
-DELAY = 10  # Delay antar batch (detik)
+UPDATE_INTERVAL = 600  # 10 menit
+DELAY = 10
 
 screener_thread_running = False
 last_screened_results = {}
 custom_filters = []
 TA_cache = {}
 
-# === Ambil list ticker dari TradingView ===
+# === Load all IDX tickers from TradingView ===
 def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
     payload = {"filter":[],"options":{"lang":"en"},"symbols":{"query":{"types":[]}},"columns":["name"]}
@@ -34,14 +34,28 @@ def load_idx_tickers_from_tv():
 
 tickers_list = load_idx_tickers_from_tv()
 
-# === Kirim pesan Telegram ===
+# === Telegram Message ===
 def send_message(chat_id, text):
     try:
         requests.post(f"{URL}/sendMessage", json={"chat_id": chat_id, "text": text})
     except Exception as e:
         print(f"[ERROR] send_message: {e}")
 
-# === Ambil TA batch dari TradingView ===
+# === TA One-by-One (/ta) ===
+def get_ta_single(ticker):
+    try:
+        handler = TA_Handler(
+            symbol=f"{ticker}",
+            screener="indonesia",
+            exchange="IDX",
+            interval=TA_INTERVAL
+        )
+        return handler.get_analysis()
+    except Exception as e:
+        print(f"[ERROR] get_ta_single: {e}")
+        return None
+
+# === Batch TA ===
 def get_tv_batch(tickers):
     try:
         data = get_multiple_analysis(
@@ -55,19 +69,7 @@ def get_tv_batch(tickers):
         print(f"[ERROR] Batch TA: {e}")
         return {}
 
-# === Fungsi TA satuan ===
-def get_ta_single(ticker):
-    try:
-        return get_analysis(
-            symbol=f"IDX:{ticker}",
-            screener="indonesia",
-            interval=TA_INTERVAL
-        )
-    except Exception as e:
-        print(f"[ERROR] get_ta_single: {e}")
-        return None
-
-# === Parse filter user ===
+# === Filter Parser ===
 def parse_filter(expr):
     match = re.match(r"(\w+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\w+)", expr.lower())
     if match:
@@ -75,7 +77,6 @@ def parse_filter(expr):
         return ind1.upper(), op.lower(), ind2.upper()
     return None
 
-# === Cek kondisi filter ===
 def check_conditions(indicators, filters):
     for ind1, op, ind2 in filters:
         val1 = indicators.get(ind1)
@@ -83,10 +84,8 @@ def check_conditions(indicators, filters):
             val2 = float(ind2)
         except:
             val2 = indicators.get(ind2)
-
         if val1 is None or val2 is None:
             return False
-
         if op == ">" and not (val1 > val2): return False
         if op == "<" and not (val1 < val2): return False
         if op == ">=" and not (val1 >= val2): return False
@@ -95,20 +94,16 @@ def check_conditions(indicators, filters):
         if op == "crossup":
             prev_val1 = indicators.get(f"PREV_{ind1}")
             prev_val2 = indicators.get(f"PREV_{ind2}")
-            if prev_val1 is None or prev_val2 is None:
-                return False
-            if not (prev_val1 < prev_val2 and val1 > val2):
+            if prev_val1 is None or prev_val2 is None or not (prev_val1 < prev_val2 and val1 > val2):
                 return False
         if op == "crossdown":
             prev_val1 = indicators.get(f"PREV_{ind1}")
             prev_val2 = indicators.get(f"PREV_{ind2}")
-            if prev_val1 is None or prev_val2 is None:
-                return False
-            if not (prev_val1 > prev_val2 and val1 < val2):
+            if prev_val1 is None or prev_val2 is None or not (prev_val1 > prev_val2 and val1 < val2):
                 return False
     return True
 
-# === Ambil semua TA (cache) ===
+# === Fetch All TA to Cache ===
 def fetch_all_ta():
     global TA_cache
     batch_size = 5
@@ -119,14 +114,12 @@ def fetch_all_ta():
             ticker = symbol.replace("IDX:", "")
             TA_cache[ticker] = result.indicators
 
-# === Screener dari cache ===
+# === Screener Core ===
 def run_screener_from_cache(chat_id):
     global last_screened_results
-
     if not custom_filters:
         send_message(chat_id, "⚠️ Belum ada filter. Gunakan /set_filter")
         return
-
     matched_now = {}
     for ticker, indicators in TA_cache.items():
         passed = check_conditions(indicators, custom_filters)
@@ -141,10 +134,9 @@ def run_screener_from_cache(chat_id):
             if ticker in last_screened_results and last_screened_results[ticker]:
                 send_message(chat_id, f"❌ {ticker} keluar dari filter")
                 matched_now[ticker] = False
-
     last_screened_results = {k: True for k in matched_now}
 
-# === Loop Screener ===
+# === Screener Thread ===
 def screener_thread(chat_id):
     global screener_thread_running
     fetch_all_ta()
@@ -152,7 +144,7 @@ def screener_thread(chat_id):
         run_screener_from_cache(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
-# === Main Telegram Bot ===
+# === Bot Main ===
 def main():
     global TA_INTERVAL, screener_thread_running, custom_filters
     offset = None
