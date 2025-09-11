@@ -71,7 +71,7 @@ def get_tv_batch(tickers):
 
 # === Filter Parser ===
 def parse_filter(expr):
-    match = re.match(r"(\w+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\w+)", expr.lower())
+    match = re.match(r"(\S+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\S+)", expr.lower())
     if match:
         ind1, op, ind2 = match.groups()
         return ind1.upper(), op.lower(), ind2.upper()
@@ -231,7 +231,9 @@ Perintah:
                                     msg = f"📊 {indicator} {ticker} ({TA_INTERVAL}): {value}"
                                     send_message(chat_id, msg)
                                 else:
-                                    send_message(chat_id, f"⛔ Indikator {indicator} tidak ditemukan.")
+                                    # KIRIM LIST INDIKATOR TERSEDIA
+                                    available = ", ".join(analysis.indicators.keys())
+                                    send_message(chat_id, f"⛔ Indikator '{indicator}' tidak ditemukan.\n🔎 Indikator tersedia:\n{available}")
                             else:
                                 send_message(chat_id, f"⛔ Data tidak tersedia untuk {ticker}")
 
