@@ -71,10 +71,10 @@ def get_tv_batch(tickers):
 
 # === Filter Parser ===
 def parse_filter(expr):
-    match = re.match(r"(\S+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\S+)", expr.lower())
+    match = re.match(r"(\S+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\S+)", expr)
     if match:
         ind1, op, ind2 = match.groups()
-        return ind1.upper(), op.lower(), ind2.upper()
+        return ind1, op.lower(), ind2
     return None
 
 def check_conditions(indicators, filters):
@@ -165,10 +165,10 @@ Perintah:
 /set_interval <1m|5m|15m|1h|1d>
 /screener_start
 /screener_stop
-/ta <ticker> atau /ta <indikator> <ticker>""")
+/ta <ticker> atau /ta <indikator1> <indikator2> ... <ticker>""")
 
                     elif text.lower().startswith("/set_filter"):
-                        raw_expr = text.replace("/set_filter", "").strip().upper()
+                        raw_expr = text.replace("/set_filter", "").strip()
                         parsed = parse_filter(raw_expr)
                         if parsed:
                             custom_filters = [parsed]
@@ -208,32 +208,28 @@ Perintah:
 
                     elif text.lower().startswith("/ta"):
                         parts = text.strip().split()
-                        if len(parts) == 2:
-                            ticker = parts[1].upper()
+                        if len(parts) >= 2:
+                            ticker = parts[-1].upper()
+                            indicators_req = parts[1:-1]  # bisa banyak indikator
                             analysis = get_ta_single(ticker)
                             if analysis:
                                 indicators = analysis.indicators
-                                summary = analysis.summary
-                                msg = f"📊 TA {ticker} ({TA_INTERVAL}):\n"
-                                msg += f"Summary: {summary.get('RECOMMENDATION')}\n"
-                                for k, v in indicators.items():
-                                    msg += f"{k}: {v}\n"
-                                send_message(chat_id, msg[:4096])
-                            else:
-                                send_message(chat_id, f"⛔ Data tidak tersedia untuk {ticker}")
-                        elif len(parts) == 3:
-                            indicator = parts[1].upper()
-                            ticker = parts[2].upper()
-                            analysis = get_ta_single(ticker)
-                            if analysis:
-                                value = analysis.indicators.get(indicator)
-                                if value is not None:
-                                    msg = f"📊 {indicator} {ticker} ({TA_INTERVAL}): {value}"
-                                    send_message(chat_id, msg)
+                                if not indicators_req:
+                                    msg = f"📊 TA {ticker} ({TA_INTERVAL}):\n"
+                                    msg += f"Summary: {analysis.summary.get('RECOMMENDATION')}\n"
+                                    for k, v in indicators.items():
+                                        msg += f"{k}: {v}\n"
+                                    send_message(chat_id, msg[:4096])
                                 else:
-                                    # KIRIM LIST INDIKATOR TERSEDIA
-                                    available = ", ".join(analysis.indicators.keys())
-                                    send_message(chat_id, f"⛔ Indikator '{indicator}' tidak ditemukan.\n🔎 Indikator tersedia:\n{available}")
+                                    msg = f"📊 TA {ticker} ({TA_INTERVAL}):\n"
+                                    for ind in indicators_req:
+                                        value = indicators.get(ind)
+                                        if value is not None:
+                                            msg += f"{ind}: {value}\n"
+                                        else:
+                                            available = ", ".join(indicators.keys())
+                                            msg += f"⛔ Indikator '{ind}' tidak ditemukan.\n🔎 Indikator tersedia:\n{available}\n"
+                                    send_message(chat_id, msg[:4096])
                             else:
                                 send_message(chat_id, f"⛔ Data tidak tersedia untuk {ticker}")
 
