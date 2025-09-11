@@ -12,10 +12,9 @@ TA_INTERVAL = Interval.INTERVAL_1_HOUR  # Interval default 1 jam
 
 screener_thread_running = False
 last_crossup_results = {}
-prev_stochastic = {}  # simpan K/D sebelumnya per ticker
-ta_cache = {}  # cache sementara
-DELAY = 10
-batch_size = 5  # batch lebih kecil supaya lebih aman
+
+# Delay per batch tetap
+DELAY = 10   # 10 detik antar batch
 
 # ---------------- Ambil ticker IDX ----------------
 def load_idx_tickers_from_tv():
@@ -39,70 +38,59 @@ def send_message(chat_id, text):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# ---------------- Screener Stochastic crossup ----------------
-def run_screener_stochastic_crossup(chat_id):
-    global last_crossup_results, prev_stochastic, ta_cache
+# ---------------- Screener EMA5 crossup EMA20 ----------------
+def run_screener_ema_crossup(chat_id):
+    global last_crossup_results
+    batch_size = 10
     any_crossup = False
 
+    # Ambil batch ticker
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
-        if not batch:
-            continue
-
-        # Retry 3x jika gagal
-        for attempt in range(3):
-            try:
-                analyses = get_multiple_analysis(
-                    screener="indonesia",
-                    interval=TA_INTERVAL,
-                    symbols=[f"IDX:{t}" for t in batch]
-                )
-                break  # sukses
-            except Exception as e:
-                print(f"Batch error attempt {attempt+1}: {e}")
-                time.sleep(5)
-        else:
-            print(f"Batch gagal setelah 3 kali percobaan: {batch}")
+        try:
+            # Gunakan get_multiple_analysis untuk batch
+            analyses = get_multiple_analysis(
+                screener="indonesia",
+                interval=TA_INTERVAL,
+                symbols=[f"IDX:{t}" for t in batch]
+            )
+        except Exception as e:
+            print(f"Batch error: {e}")
+            time.sleep(DELAY)
             continue
 
         for symbol_full, data in analyses.items():
             ticker = symbol_full.replace("IDX:", "")
             indicators = data.indicators
 
-            current_K = indicators.get("STOCH.K")
-            current_D = indicators.get("STOCH.D")
-
-            if current_K is None or current_D is None:
+            ema5 = indicators.get("EMA5")
+            ema20 = indicators.get("EMA20")
+            if ema5 is None or ema20 is None:
                 continue
 
-            prev_K, prev_D = prev_stochastic.get(ticker, (None, None))
-            crossup = prev_K is not None and prev_D is not None and prev_K < prev_D and current_K > current_D
+            crossup = ema5 > ema20
 
             if crossup:
                 any_crossup = True
                 if ticker not in last_crossup_results or not last_crossup_results[ticker]:
-                    msg = f"✅ {ticker} Stochastic K crossup D\nK: {current_K}\nD: {current_D}"
+                    msg = f"✅ {ticker} EMA5 crossup EMA20\nEMA5: {ema5}\nEMA20: {ema20}"
                     send_message(chat_id, msg)
                     last_crossup_results[ticker] = True
             else:
                 if ticker in last_crossup_results and last_crossup_results[ticker]:
-                    send_message(chat_id, f"❌ {ticker} keluar dari Stochastic K crossup D")
+                    send_message(chat_id, f"❌ {ticker} keluar dari EMA5 crossup EMA20")
                     last_crossup_results[ticker] = False
 
-            # update cache dan prev K/D
-            ta_cache[ticker] = (current_K, current_D)
-            prev_stochastic[ticker] = (current_K, current_D)
-
-        time.sleep(DELAY)
+        time.sleep(DELAY)  # Delay antar batch
 
     if not any_crossup:
-        send_message(chat_id, "⚠️ Screener selesai, tidak ada Stochastic crossup saat ini.")
+        send_message(chat_id, "⚠️ Screener selesai, tidak ada EMA5 crossup EMA20 saat ini.")
 
 # ---------------- Screener Thread ----------------
 def screener_thread(chat_id):
     global screener_thread_running
     while screener_thread_running:
-        run_screener_stochastic_crossup(chat_id)
+        run_screener_ema_crossup(chat_id)
         time.sleep(UPDATE_INTERVAL)
 
 # ---------------- Telegram Main Loop ----------------
@@ -119,13 +107,13 @@ def main():
                     text = message.get("text", "").lower()
 
                     if "/start" in text:
-                        send_message(chat_id, "Bot Stochastic crossup 1H aktif.\nPerintah:\n/screener_start\n/screener_stop\n/set_interval")
+                        send_message(chat_id, "Bot EMA5 crossup EMA20 aktif.\nPerintah:\n/screener_start\n/screener_stop\n/set_interval")
 
                     elif text.startswith("/screener_start"):
                         if not screener_thread_running:
                             screener_thread_running = True
                             threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
-                            send_message(chat_id, "✅ Screener Stochastic crossup 1H realtime dimulai (refresh tiap 10 menit)")
+                            send_message(chat_id, "✅ Screener EMA5 crossup EMA20 realtime dimulai (refresh tiap 10 menit)")
                         else:
                             send_message(chat_id, "Screener sudah berjalan.")
 
