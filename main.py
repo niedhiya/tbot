@@ -62,6 +62,7 @@ def get_tv_batch(tickers):
 
 # ---------------- Parsing Filter User ----------------
 def parse_filter(expr):
+    # Terima seluruh expression, contoh: "STOCHK crossup STOCHD" atau "RSI>50"
     match = re.match(r"(\w+)\s*(>|<|>=|<=|==|crossup|crossdown)\s*(\w+)", expr.lower())
     if match:
         ind1, op, ind2 = match.groups()
@@ -155,9 +156,9 @@ def main():
                 message = update.get("message")
                 if message:
                     chat_id = message["chat"]["id"]
-                    text = message.get("text", "").lower()
+                    text = message.get("text", "").strip()
 
-                    if "/start" in text:
+                    if "/start" in text.lower():
                         send_message(chat_id,
 """📊 Bot Screener IDX Siap.
 Perintah:
@@ -166,13 +167,16 @@ Perintah:
 /screener_start
 /screener_stop""")
 
-                    elif text.startswith("/set_filter"):
-                        raw = text.replace("/set_filter", "").strip().upper().split()
-                        parsed = [parse_filter(x) for x in raw if parse_filter(x)]
-                        custom_filters = parsed
-                        send_message(chat_id, f"✅ Filter diset:\n" + "\n".join(raw))
+                    elif text.lower().startswith("/set_filter"):
+                        raw_expr = text.replace("/set_filter", "").strip().upper()
+                        parsed = parse_filter(raw_expr)
+                        if parsed:
+                            custom_filters = [parsed]
+                            send_message(chat_id, f"✅ Filter diset:\n{raw_expr}")
+                        else:
+                            send_message(chat_id, "⛔ Format filter salah. Contoh: EMA5 crossup EMA20")
 
-                    elif text.startswith("/set_interval"):
+                    elif text.lower().startswith("/set_interval"):
                         parts = text.split()
                         if len(parts) == 2:
                             interval_map = {
@@ -180,9 +184,8 @@ Perintah:
                                 "5m": Interval.INTERVAL_5_MINUTES,
                                 "15m": Interval.INTERVAL_15_MINUTES,
                                 "1h": Interval.INTERVAL_1_HOUR,
-                                "1d": Interval.INTERVAL_1_DAY,
                                 "4h": Interval.INTERVAL_4_HOURS,
-                                "3h": Interval.INTERVAL_1_HOUR
+                                "1d": Interval.INTERVAL_1_DAY
                             }
                             key = parts[1]
                             if key in interval_map:
@@ -191,7 +194,7 @@ Perintah:
                             else:
                                 send_message(chat_id, "⛔ Interval tidak dikenali. Gunakan: 1m, 5m, 15m, 1h, 4h, 1d")
 
-                    elif text.startswith("/screener_start"):
+                    elif text.lower().startswith("/screener_start"):
                         if not screener_thread_running:
                             screener_thread_running = True
                             threading.Thread(target=screener_thread, args=(chat_id,), daemon=True).start()
@@ -199,7 +202,7 @@ Perintah:
                         else:
                             send_message(chat_id, "⚠️ Screener sudah berjalan.")
 
-                    elif text.startswith("/screener_stop"):
+                    elif text.lower().startswith("/screener_stop"):
                         screener_thread_running = False
                         send_message(chat_id, "🛑 Screener dihentikan.")
 
