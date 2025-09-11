@@ -165,7 +165,7 @@ Perintah:
 /set_interval <1m|5m|15m|1h|1d>
 /screener_start
 /screener_stop
-/ta <ticker>""")
+/ta <ticker> atau /ta <indikator> <ticker>""")
 
                     elif text.lower().startswith("/set_filter"):
                         raw_expr = text.replace("/set_filter", "").strip().upper()
@@ -207,7 +207,7 @@ Perintah:
                         send_message(chat_id, "🛑 Screener dihentikan.")
 
                     elif text.lower().startswith("/ta"):
-                        parts = text.split()
+                        parts = text.strip().split()
                         if len(parts) == 2:
                             ticker = parts[1].upper()
                             analysis = get_ta_single(ticker)
@@ -219,6 +219,19 @@ Perintah:
                                 for k, v in indicators.items():
                                     msg += f"{k}: {v}\n"
                                 send_message(chat_id, msg[:4096])
+                            else:
+                                send_message(chat_id, f"⛔ Data tidak tersedia untuk {ticker}")
+                        elif len(parts) == 3:
+                            indicator = parts[1].upper()
+                            ticker = parts[2].upper()
+                            analysis = get_ta_single(ticker)
+                            if analysis:
+                                value = analysis.indicators.get(indicator)
+                                if value is not None:
+                                    msg = f"📊 {indicator} {ticker} ({TA_INTERVAL}): {value}"
+                                    send_message(chat_id, msg)
+                                else:
+                                    send_message(chat_id, f"⛔ Indikator {indicator} tidak ditemukan.")
                             else:
                                 send_message(chat_id, f"⛔ Data tidak tersedia untuk {ticker}")
 
