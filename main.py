@@ -24,9 +24,15 @@ def load_idx_tickers_from_tv():
     url = 'https://scanner.tradingview.com/indonesia/scan'
     payload = {"filter":[],"options":{"lang":"en"},"symbols":{"query":{"types":[]}},"columns":["name"]}
     try:
-        r = requests.post(url, json=payload)
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code != 200:
+            print(f"[WARN] HTTP {r.status_code}")
+            return []
         data = r.json()
         return [item['d'][0].replace('IDX:', '') for item in data.get('data', []) if item.get('d')]
+    except ValueError:
+        print(f"[ERROR] Response not JSON: {r.text[:100]}...")
+        return []
     except Exception as e:
         print(f"[ERROR] Load ticker: {e}")
         return []
@@ -52,7 +58,6 @@ def get_tv_batch(tickers):
         return data
     except Exception as e:
         print(f"[ERROR] Batch TA: {e}")
-        time.sleep(DELAY)
         return {}
 
 # ---------------- Parsing Filter User ----------------
@@ -98,7 +103,7 @@ def check_conditions(indicators, filters):
 # ---------------- Fetch semua TA sekaligus ----------------
 def fetch_all_ta():
     global TA_cache
-    batch_size = 10
+    batch_size = 5  # batch kecil untuk kurangi 429
     for i in range(0, len(tickers_list), batch_size):
         batch = tickers_list[i:i+batch_size]
         results = get_tv_batch(batch)
